@@ -71,8 +71,17 @@ final class Coordinator: ObservableObject {
         guard let closed = ProcessProbe.lidClosed() else { return }
         defer { lidClosed = closed }
         guard closed != lidClosed, state.mode == .armed else { return }   // act on transitions only
-        // Keeping awake always means: screen off when the lid closes, screen back on when it opens.
+        // Default: screen off on close, back on when it opens. If the user opted to keep the screen
+        // awake, we hold a display assertion instead and don't force it off.
+        if state.keepScreenAwake { return }
         if closed { PowerManager.displayOff() } else { PowerManager.wakeDisplay() }
+    }
+
+    /// Hold/release the display-awake assertion to match (armed && keepScreenAwake). Called on arm,
+    /// disarm, and when the toggle changes.
+    func syncDisplayAwake() {
+        if state.mode == .armed && state.keepScreenAwake { PowerManager.holdDisplayAwake() }
+        else { PowerManager.releaseDisplayAwake() }
     }
 
     // MARK: - arming (called AFTER which/when/how is configured)
@@ -93,6 +102,7 @@ final class Coordinator: ObservableObject {
         state.lastStatus = "Armed — watching \(who)"
         startWatchdog()
         schedulePoll()   // slow to 60s while armed
+        syncDisplayAwake()
     }
 
     func disarm(_ note: String = "Reverted to normal sleep") {
@@ -100,6 +110,7 @@ final class Coordinator: ObservableObject {
         armedAt = nil
         StateStore.save(DesiredState(mode: .normal, armedAt: nil, reason: note))
         _ = PowerManager.disarm()
+        PowerManager.releaseDisplayAwake()
         state.mode = .normal
         state.lastStatus = note
         schedulePoll()   // back to 15s
@@ -114,6 +125,7 @@ final class Coordinator: ObservableObject {
         state.setAll(.off)
         StateStore.save(DesiredState(mode: .normal, armedAt: nil, reason: "reset"))
         _ = PowerManager.disarm()
+        PowerManager.releaseDisplayAwake()
         state.mode = .normal
         state.lastStatus = "Reset — normal sleep restored (lid sleeps)"
         schedulePoll()

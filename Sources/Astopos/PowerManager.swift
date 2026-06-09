@@ -42,6 +42,23 @@ enum PowerManager {
         run("/usr/bin/pmset", ["displaysleepnow"])
     }
 
+    // MARK: - keep display awake (optional)
+
+    private static var displayAssertion: IOPMAssertionID = 0
+
+    /// Hold a display-sleep-prevention assertion so the screen doesn't idle-sleep/lock (lid open).
+    static func holdDisplayAwake() {
+        guard displayAssertion == 0 else { return }
+        IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleDisplaySleep as CFString,
+                                    IOPMAssertionLevel(kIOPMAssertionLevelOn),
+                                    "Astopos: keep screen awake while armed" as CFString,
+                                    &displayAssertion)
+    }
+
+    static func releaseDisplayAwake() {
+        if displayAssertion != 0 { IOPMAssertionRelease(displayAssertion); displayAssertion = 0 }
+    }
+
     /// Wake the display on lid-open — no sudo, no external process. Uses the same IOKit mechanism
     /// `caffeinate -u` calls: declaring local user activity powers the display back on.
     static func wakeDisplay() {

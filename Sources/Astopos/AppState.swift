@@ -91,6 +91,10 @@ final class AppState: ObservableObject {
 
     @Published var silentSudoInstalled: Bool = false
 
+    /// Optional: while armed, hold the screen awake (no auto-lock) instead of letting it turn off.
+    /// Mainly affects the lid-open case; with the lid shut the panel is off by hardware regardless.
+    @Published var keepScreenAwake: Bool = false
+
     /// Hard cap: revert no matter what after this many minutes (0 = disabled).
     @Published var watchdogMinutes: Int = 120
 

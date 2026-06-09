@@ -170,6 +170,11 @@ struct PanelView: View {
                     .font(.caption2).foregroundStyle(.orange)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
+            Toggle("Keep screen on while armed (no auto-lock)", isOn: Binding(
+                get: { state.keepScreenAwake },
+                set: { state.keepScreenAwake = $0; coord.syncDisplayAwake() }))
+                .toggleStyle(.checkbox).font(.caption2)
+                .frame(maxWidth: .infinity, alignment: .leading)
             HStack {
                 Button("Sleep now") { PowerManager.sleepNow() }.frame(maxWidth: .infinity)
                 Button("Reset") { coord.reset() }.frame(maxWidth: .infinity)
