@@ -151,16 +151,18 @@ struct PanelView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(!state.hasSelection)
-                if state.hasSelection {
-                    Text("Stays awake (screen off when lid shut). Sleeps once every monitored session finishes.")
-                        .font(.caption2).foregroundStyle(.secondary)
-                    Label("On the move? Tether to your phone's hotspot — if the network drops, a session can stall.",
-                          systemImage: "wifi")
-                        .font(.caption2).foregroundStyle(.orange)
-                } else {
-                    Text("Pick a “sleep when” for a session to enable Arm.")
-                        .font(.caption2).foregroundStyle(.secondary)
-                }
+                Text(state.hasSelection
+                     ? "Stays awake (screen off when lid shut). Sleeps once every monitored session finishes."
+                     : "Pick a “sleep when” for a session to enable Arm.")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            // Network reminder — shown while armed (when it matters most) and pre-arm once a
+            // session is picked.
+            if state.mode == .armed || state.hasSelection {
+                Label("On the move? Tether to your phone's hotspot — if the network drops, a session can stall.",
+                      systemImage: "wifi")
+                    .font(.caption2).foregroundStyle(.orange)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             HStack {
                 Button("Sleep now") { PowerManager.sleepNow() }.frame(maxWidth: .infinity)
