@@ -1,0 +1,5 @@
+.build/
+Astopos.app/
+*.xcodeproj
+.DS_Store
+.swiftpm/
