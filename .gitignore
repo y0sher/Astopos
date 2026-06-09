@@ -1,5 +1,7 @@
 .build/
 Astopos.app/
+*.dmg
+dmg-stage/
 *.xcodeproj
 .DS_Store
 .swiftpm/
