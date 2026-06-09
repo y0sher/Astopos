@@ -64,6 +64,11 @@ final class Coordinator: ObservableObject {
             }
         }
         evaluateDone()
+        // Keep the safety cap from firing mid-work: while any monitored session is genuinely
+        // active, push the watchdog out. It only fires after a long stretch with nothing happening.
+        if state.mode == .armed, state.monitoredSessions.contains(where: { $0.isWorking }) {
+            startWatchdog()
+        }
         state.objectWillChange.send()
     }
 
@@ -105,15 +110,22 @@ final class Coordinator: ObservableObject {
         syncDisplayAwake()
     }
 
-    func disarm(_ note: String = "Reverted to normal sleep") {
+    @discardableResult
+    func disarm(_ note: String = "Reverted to normal sleep") -> Bool {
+        // The revert needs admin rights. If it didn't actually happen (e.g. the password prompt was
+        // dismissed), DON'T claim we're normal — we're still keeping the Mac awake.
+        guard PowerManager.disarm() else {
+            state.lastStatus = "Revert needs your password — still awake (Stop again, or install silent mode)"
+            return false
+        }
         stopWatchdog()
         armedAt = nil
-        StateStore.save(DesiredState(mode: .normal, armedAt: nil, reason: note))
-        _ = PowerManager.disarm()
         PowerManager.releaseDisplayAwake()
+        StateStore.save(DesiredState(mode: .normal, armedAt: nil, reason: note))
         state.mode = .normal
         state.lastStatus = note
         schedulePoll()   // back to 15s
+        return true
     }
 
     /// Hard reset: force normal sleep (lid closes → sleep) no matter the current state, and clear
@@ -151,8 +163,11 @@ final class Coordinator: ObservableObject {
     private func fireAction() {
         // TODO(lid-guard): sleeps even with the lid OPEN. Could add "only sleep if lid closed" later.
         // All monitored sessions met their criteria → restore normal sleep, then sleep the Mac.
-        disarm("Done — all sessions finished; sleeping")
-        PowerManager.sleepNow()
+        // Only actually sleep if the revert succeeded (otherwise disablesleep is still on and the
+        // sleep would be blocked anyway).
+        if disarm("Done — all sessions finished; sleeping") {
+            PowerManager.sleepNow()
+        }
     }
 
     // MARK: - watchdog (PLAN.md §5, layer 2)
@@ -160,6 +175,8 @@ final class Coordinator: ObservableObject {
     private func startWatchdog() {
         stopWatchdog()
         guard state.watchdogMinutes > 0 else { return }
+        // Don't cap sessions the user pinned to stay awake forever (the server / long-runner case).
+        if state.monitoredSessions.contains(where: { state.policy(for: $0.id).kind == .never }) { return }
         watchdog = Timer.scheduledTimer(withTimeInterval: TimeInterval(state.watchdogMinutes * 60),
                                         repeats: false) { [weak self] _ in
             Task { @MainActor in self?.disarm("Watchdog hard-cap reached — reverted") }
