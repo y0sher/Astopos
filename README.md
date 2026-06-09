@@ -68,4 +68,5 @@ make app             # bundle Astopos.app (menu-bar only) — then drag to /Appl
 ## Heads-up
 
 - The privileged toggle (`pmset disablesleep`) needs an admin password each arm/revert. Install **silent mode** (Setup → scoped `sudoers` entry) for hands-off, prompt-free operation.
-- If you also run **Amphetamine**, pause its session while Astopos is armed — they both manage the same sleep setting.
+- **Amphetamine** plays nicely alongside Astopos — they do different jobs: Amphetamine keeps the *display* awake/unlocked while you work with the lid open; Astopos keeps the *system* awake with the lid closed and sleeps it when you're done. Just leave Amphetamine's **"Allow when display is closed"** option **off** — that one fights Astopos for the lid-closed setting. Everything else can stay on.
+- A dark/locked screen while armed is normal — the Mac is still awake and your sessions keep running. The password on reopen is just macOS's screen lock (tied to the display turning off), not a wake-from-sleep.

@@ -57,6 +57,12 @@ struct PanelView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
                 header
+                if state.mode == .armed {
+                    Label("A dark screen is normal — the Mac is awake and your sessions keep running.",
+                          systemImage: "bolt.fill")
+                        .font(.caption2).foregroundStyle(.yellow)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 Divider()
                 sessionsSection
                 Divider()
