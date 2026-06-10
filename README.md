@@ -1,5 +1,9 @@
 # Astopos
 
+<p align="center">
+  <img src="https://github.com/y0sher/Astopos/releases/download/v0.2.0/readme_image.jpg" alt="Astopos" width="320">
+</p>
+
 **Keep your Mac awake — lid closed — only for as long as your AI coding sessions actually need it, then let it sleep.**
 
 A tiny menu-bar app for the moment your agent is mid-flight and you have to get up.

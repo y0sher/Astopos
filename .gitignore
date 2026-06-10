@@ -5,3 +5,6 @@ dmg-stage/
 *.xcodeproj
 .DS_Store
 .swiftpm/
+# Raw source art (the compiled Astopos.icns is committed instead; README/release
+# images are hosted on the GitHub release, not in the repo).
+images/
