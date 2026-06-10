@@ -1,5 +1,6 @@
 import Foundation
 import Combine
+import AppKit
 
 /// Polls Claude/Codex transcripts + the OS probe and drives power actions via the observable state.
 @MainActor
@@ -14,6 +15,8 @@ final class Coordinator: ObservableObject {
     private var privilegedInFlight = false   // at most one pmset/admin-dialog at a time
     private var prunedOnce = false           // stale persisted policies dropped after first scan
     private var sleptForDone = false         // one-shot: already slept for the current done-state
+    private var panelOpen = false            // drives poll cadence (live while visible)
+    private var quitWithoutRevert = false    // user chose to quit with keep-awake still on
 
     init() {
         AppDelegate.coord = self   // so quit/signal paths can revert even if the panel never opened
@@ -40,12 +43,22 @@ final class Coordinator: ObservableObject {
 
     private func schedulePoll() {
         evalTimer?.invalidate()
-        let interval: TimeInterval = state.mode == .armed ? 60 : 15
+        // Panel open → live (15s). Armed in background → 60s (the unattended done-evaluation
+        // needs it). Otherwise → 120s discovery only: opening the panel polls immediately, so
+        // background freshness is pointless work for an audience of zero.
+        let interval: TimeInterval = panelOpen ? 15 : (state.mode == .armed ? 60 : 120)
         state.pollIntervalSeconds = Int(interval)
         evalTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.poll() }
         }
     }
+
+    /// Panel visibility drives cadence; opening always scans immediately so the list is fresh
+    /// the moment the user looks.
+    func panelDidAppear() { panelOpen = true; poll(); schedulePoll() }
+    func panelDidDisappear() { panelOpen = false; schedulePoll() }
+    /// Manual re-scan (the liveness line doubles as a refresh button).
+    func refreshNow() { poll() }
 
     /// What one background probe pass read for a transcript.
     private struct TranscriptScan {
@@ -237,7 +250,56 @@ final class Coordinator: ObservableObject {
         state.mode = .normal
         state.lastStatus = "Reset — normal sleep restored (lid sleeps)"
         schedulePoll()
-        Task { _ = await runPrivileged({ PowerManager.disarm() }) }
+        Task {
+            if await runPrivileged({ PowerManager.disarm() }) != true {
+                state.lastStatus = "Reset incomplete — password not accepted, keep-awake may still be on. Hit Reset to retry."
+            }
+        }
+    }
+
+    // MARK: - auth-failure UX (the user is present for these — say it to their face)
+
+    /// Modal alert for password failures on user-initiated actions. A status line in a closed
+    /// panel is invisible; a refused password that leaves the Mac stuck awake must not be.
+    private func authAlert(_ message: String, _ info: String, buttons: [String]) -> NSApplication.ModalResponse {
+        let a = NSAlert()
+        a.alertStyle = .warning
+        a.messageText = message
+        a.informativeText = info
+        for b in buttons { a.addButton(withTitle: b) }
+        NSApp.activate(ignoringOtherApps: true)
+        return a.runModal()
+    }
+
+    /// Stop & revert from the panel; on a refused password, surface it and offer retry.
+    func stopAndRevert() {
+        Task {
+            if await disarm("Stopped manually") { return }
+            let r = authAlert("Still keeping the Mac awake",
+                              "Normal sleep wasn't restored — the password wasn't accepted (or the prompt was cancelled). Until it is, the Mac won't sleep when the lid closes.",
+                              buttons: ["Try Again", "Leave It On"])
+            if r == .alertFirstButtonReturn { stopAndRevert() }
+        }
+    }
+
+    /// Quit from the panel. While armed, revert first; if the password is refused, make the
+    /// consequence explicit instead of silently vanishing with keep-awake still on.
+    func requestQuit() {
+        guard state.mode == .armed else { shutdown(); NSApp.terminate(nil); return }
+        Task {
+            if await disarm("Reverted — quitting") { shutdown(); NSApp.terminate(nil); return }
+            let r = authAlert("Quit without restoring sleep?",
+                              "The password wasn't accepted, so keep-awake is still on — the Mac won't sleep when the lid closes. The next launch will detect this and offer to fix it.",
+                              buttons: ["Try Again", "Quit Anyway", "Cancel"])
+            switch r {
+            case .alertFirstButtonReturn: requestQuit()
+            case .alertSecondButtonReturn:
+                quitWithoutRevert = true
+                shutdown()
+                NSApp.terminate(nil)
+            default: break
+            }
+        }
     }
 
     // MARK: - the done-policy evaluator (WHEN)
@@ -336,9 +398,23 @@ final class Coordinator: ObservableObject {
     // MARK: - lifecycle
 
     /// Called on quit / signal: best-effort synchronous revert (PLAN.md §5, layer 3) — the app is
-    /// dying, an async hop would never complete.
+    /// dying, an async hop would never complete. Crucially, NEVER record "normal" unless the
+    /// revert actually happened: a refused password at quit used to write a lying state file and
+    /// leave the Mac stuck awake with no trace.
     func shutdown() {
-        if state.mode == .armed { _ = PowerManager.disarm() }
-        StateStore.save(DesiredState(mode: .normal, armedAt: nil, reason: "app-quit"))
+        if quitWithoutRevert {
+            StateStore.save(DesiredState(mode: .armed, armedAt: state.armedAt, reason: "quit-without-revert"))
+            return
+        }
+        if state.mode == .armed {
+            if PowerManager.disarm() {
+                state.mode = .normal
+                StateStore.save(DesiredState(mode: .normal, armedAt: nil, reason: "app-quit"))
+            } else {
+                StateStore.save(DesiredState(mode: .armed, armedAt: state.armedAt, reason: "quit-revert-failed"))
+            }
+        } else {
+            StateStore.save(DesiredState(mode: .normal, armedAt: nil, reason: "app-quit"))
+        }
     }
 }

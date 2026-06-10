@@ -28,7 +28,9 @@ enum StateStore {
     }
 
     /// On launch: if we previously armed but the app died without reverting, revert now.
-    /// Returns a human-readable note if it took action.
+    /// Returns a human-readable note if it took action. The revert needs admin rights — if the
+    /// password is refused, say so honestly (and don't overwrite the state file with "normal",
+    /// so the next launch retries) instead of claiming the reconcile happened.
     @discardableResult
     static func reconcile() -> String? {
         guard let s = load() else { return nil }
@@ -36,14 +38,18 @@ enum StateStore {
         switch s.mode {
         case .normal:
             if pmsetSaysAwake {
-                _ = PowerManager.disarm()
-                return "Reconciled: reverted stale keep-awake from a previous run."
+                if PowerManager.disarm() {
+                    return "Reconciled: reverted stale keep-awake from a previous run."
+                }
+                return "Keep-awake was left ON and the password wasn't accepted — hit Reset to restore normal sleep."
             }
         case .armed:
             // We were armed and the app is starting fresh — treat as orphaned: revert to be safe.
-            _ = PowerManager.disarm()
-            save(DesiredState(mode: .normal, armedAt: nil, reason: "reconciled-on-launch"))
-            return "Reconciled: previous session left keep-awake on — reverted."
+            if PowerManager.disarm() {
+                save(DesiredState(mode: .normal, armedAt: nil, reason: "reconciled-on-launch"))
+                return "Reconciled: previous session left keep-awake on — reverted."
+            }
+            return "Previous session left keep-awake ON and the password wasn't accepted — hit Reset to restore normal sleep."
         }
         return nil
     }

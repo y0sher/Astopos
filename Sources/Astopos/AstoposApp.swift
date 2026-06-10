@@ -140,12 +140,17 @@ struct PanelView: View {
                 advancedSection
                 Divider()
                 HStack {
-                    Button("Quit Astopos") { coord.shutdown(); NSApp.terminate(nil) }
+                    Button("Quit Astopos") { coord.requestQuit() }
                     Spacer()
                     if let polled = state.lastPollAt {
-                        Text("checked \(shortDuration(Int(Date().timeIntervalSince(polled)))) ago · every \(state.pollIntervalSeconds)s")
-                            .font(.caption2).foregroundStyle(.tertiary)
-                            .help("Astopos re-scans sessions on this cadence; the lid watcher ticks every 3s")
+                        // The element that tells you it's stale is also the cure: click to re-scan.
+                        Button { coord.refreshNow() } label: {
+                            Text("checked \(shortDuration(Int(Date().timeIntervalSince(polled)))) ago · every \(shortDuration(state.pollIntervalSeconds))")
+                                .font(.caption2).foregroundStyle(.tertiary)
+                        }
+                        .buttonStyle(.plain)
+                        .help("Click to re-scan sessions now")
+                        .accessibilityLabel("Refresh sessions now")
                     }
                 }
             }
@@ -154,9 +159,11 @@ struct PanelView: View {
         .frame(width: 340)
         .onAppear {
             AppDelegate.coord = coord
+            coord.panelDidAppear()
             coord.refreshSudoStatus()
             launchAtLogin = Bundle.main.bundleIdentifier != nil && SMAppService.mainApp.status == .enabled
         }
+        .onDisappear { coord.panelDidDisappear() }
     }
 
     /// Status message with an age suffix once it's no longer fresh — "Couldn't arm (permission
@@ -257,7 +264,7 @@ struct PanelView: View {
     private var controlButtons: some View {
         VStack(spacing: 8) {
             if state.mode == .armed {
-                Button { Task { await coord.disarm("Stopped manually") } } label: {
+                Button { coord.stopAndRevert() } label: {
                     Label("Stop & revert now", systemImage: "stop.fill").frame(maxWidth: .infinity)
                 }.buttonStyle(.borderedProminent).tint(.orange)
             } else {
