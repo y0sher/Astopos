@@ -36,7 +36,7 @@ Astopos polls the transcripts both tools already write:
 - Claude → `~/.claude/projects/<cwd>/<id>.jsonl`
 - Codex → `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl`
 
-From those + the process list it knows each session's **project folder**, a **name** (its first prompt), and whether it's **working / idle / running a tool**. A session counts as *idle* only when it's quiet **and** nothing is executing (no running tool, no subagent) — so "waiting on your question" reads as idle, but a running build keeps it awake.
+From those + the process list it knows each session's **project folder**, a **name** (its first prompt), and whether it's **working / idle / running a tool**. A session counts as *stopped* when it has yielded the turn and gone quiet — a tool still executing mid-turn (a long build the agent is waiting on) always keeps it "working". **Background processes the session left running (a dev server, a backgrounded build) don't block sleep by default** — tick **Wait for background processes** on that session if they should, or pin it to **Never**.
 
 ## Use it
 
@@ -46,11 +46,13 @@ From those + the process list it knows each session's **project folder**, a **na
    - **Idle N min** — sleeps once it's been quiet for N minutes. This doubles as a **remote-control window**: if you're driving the session from your phone (SSH'd in) with the lid closed, the quiet timer gives you N minutes to send the next prompt before the Mac sleeps. Send something and the window resets; don't, and it sleeps on its own — so you get a chance to keep going without burning battery if you walk away for good.
    - **Never** — keep awake until you stop it (for a server / long-runner you want to reach).
    - **Off** — don't monitor.
+
+   Each monitored session also has a **Wait for background processes** checkbox (off by default): tick it if servers or backgrounded builds the session spawned should hold the Mac awake too.
 3. Hit **Arm keep-awake** (one password prompt). Close the lid and go.
    > Astopos sleeps the Mac when your sessions finish — no password needed. *Turning the keep-awake setting back off* afterward (so the next lid-close sleeps normally) does need admin: enable **Auto-restore sleep** once (in Advanced) to have it happen without a prompt. Skip it and the Mac still sleeps — the setting just stays on until you revert it yourself (**Stop & revert** / **Reset**).
 4. When every monitored session is done, Astopos sleeps the Mac (if the lid's closed). Or hit **Stop & revert** / **Reset** anytime.
 
-Only work that happens **after** you arm counts — arming a session that's already idle won't sleep immediately.
+**Arming mid-flight just works** — and it's the normal case. The quiet timer counts from the later of the session's last activity and the moment you armed, so arming an already-stopped session works too: it gets the full "On stop" grace / idle window from the arm (no insta-sleep), and the Mac only force-sleeps once the lid is closed anyway.
 
 > 📶 **On the move? Tether to your phone's hotspot before you go.** Astopos keeps the Mac running, but most agent sessions need the network — if your Wi-Fi drops (leaving the office, between buildings), the session can stall waiting on the connection. A hotspot lets you walk anywhere and keep it going.
 

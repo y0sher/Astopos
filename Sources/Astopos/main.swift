@@ -19,8 +19,9 @@ if args.contains("--discover") {
     for s in sessions {
         let idle = ProcessProbe.mtime(s.transcript).map { Int(-$0.timeIntervalSinceNow) } ?? -1
         let sub = ProcessProbe.subagentActive(s.transcript, agent: s.agent)
+        let mid = ProcessProbe.awaitingTool(s.transcript, agent: s.agent)
         let summary = ProcessProbe.summarize(s.transcript, agent: s.agent)
-        print("  [\(s.agent.rawValue)] \((s.cwd as NSString).lastPathComponent)  idle=\(idle)s subagent=\(sub) tool=\(busy.contains(s.cwd))  \"\(summary)\"")
+        print("  [\(s.agent.rawValue)] \((s.cwd as NSString).lastPathComponent)  idle=\(idle)s subagent=\(sub) midTurn=\(mid) bg=\(busy.contains(s.cwd))  \"\(summary)\"")
     }
     exit(0)
 }

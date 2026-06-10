@@ -50,6 +50,7 @@ final class Coordinator: ObservableObject {
     private struct TranscriptScan {
         let mtime: Date?
         let subagent: Bool
+        let midTurn: Bool
         let summary: String?
     }
 
@@ -74,6 +75,7 @@ final class Coordinator: ObservableObject {
                 scans[t.transcript] = TranscriptScan(
                     mtime: ProcessProbe.mtime(t.transcript),
                     subagent: ProcessProbe.subagentActive(t.transcript, agent: t.agent),
+                    midTurn: ProcessProbe.awaitingTool(t.transcript, agent: t.agent),
                     summary: t.needsSummary ? ProcessProbe.summarize(t.transcript, agent: t.agent) : nil)
             }
             let result = scans
@@ -106,6 +108,7 @@ final class Coordinator: ObservableObject {
             guard let scan = scans[s.transcript] else { continue }
             state.sessions[i].lastSeen = scan.mtime ?? s.lastSeen
             state.sessions[i].subagentsActive = scan.subagent
+            state.sessions[i].midTurn = scan.midTurn
             state.sessions[i].toolRunning = busy.contains(s.cwd)
             if s.summary.isEmpty, let sum = scan.summary, !sum.isEmpty {
                 state.sessions[i].summary = sum

@@ -373,6 +373,13 @@ struct SessionRow: View {
                     }
                 }
                 .padding(.leading, 20)   // align under the title, past the checkbox
+                if pol.kind != .never {
+                    Toggle("Wait for background processes (servers) too", isOn: Binding(
+                        get: { pol.waitForChildren },
+                        set: { on in state.updatePolicy(sess.id) { $0.waitForChildren = on } }))
+                        .toggleStyle(.checkbox).font(.caption2).foregroundStyle(.secondary)
+                        .padding(.leading, 20)
+                }
             }
         }
         .padding(7)
@@ -399,21 +406,24 @@ struct SessionRow: View {
     private var stateText: String {
         if sess.endedAt != nil { return "ended" }
         if sess.subagentsActive { return "subagent" }
-        if sess.toolRunning { return "running" }
+        if sess.midTurn { return "running a tool" }
+        if monitored, pol.waitForChildren, sess.toolRunning { return "background process running" }
         if sess.idleSeconds < 15 { return "working" }
         let s = sess.idleSeconds
-        let idle = s >= 60 ? "idle \(s / 60)m" : "idle \(s)s"
+        var idle = s >= 60 ? "idle \(s / 60)m" : "idle \(s)s"
+        if sess.toolRunning { idle += " · bg running" }   // informational: not blocking sleep
         if let extra = countdown { return "\(idle) · \(extra)" }
         return idle
     }
 
-    /// While armed: how close this idle session is to meeting its own trigger.
+    /// While armed: how close this idle session is to meeting its own trigger. The quiet window
+    /// counts from the later of last activity and the arm (mirrors DoneRule).
     private var countdown: String? {
         guard state.mode == .armed, monitored, sess.endedAt == nil else { return nil }
         if pol.kind == .never { return "pinned awake" }
         guard let quiet = pol.quietSeconds, let armed = state.armedAt else { return nil }
-        guard sess.lastSeen > armed else { return "waiting for activity" }
-        let remain = quiet - sess.idleSeconds
+        let reference = max(sess.lastSeen, armed)
+        let remain = quiet - max(0, Int(Date().timeIntervalSince(reference)))
         return remain > 0 ? "done in \(shortDuration(remain))" : "done ✓"
     }
 

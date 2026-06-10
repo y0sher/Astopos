@@ -71,6 +71,36 @@ enum ProcessProbe {
         return false
     }
 
+    /// True if the session is mid-turn executing a tool — the transcript's last meaningful entry
+    /// is a tool call with no result yet (e.g. a long build running in the foreground). This is
+    /// what keeps a quiet-looking transcript from reading as "stopped" while work is in flight.
+    /// Distinct from background children: a server the session left running is NOT mid-turn.
+    static func awaitingTool(_ path: String, agent: Agent) -> Bool {
+        guard let lines = tail(path) else { return false }
+        if agent == .claude {
+            for line in lines.reversed() {
+                guard let obj = json(line), let type = obj["type"] as? String else { continue }
+                if type == "assistant" {
+                    let content = (obj["message"] as? [String: Any])?["content"] as? [[String: Any]] ?? []
+                    return content.contains { ($0["type"] as? String) == "tool_use" }
+                }
+                if type == "user" { return false }   // a prompt or a tool_result — no tool pending
+            }
+            return false
+        }
+        // Codex rollouts: a function_call with no function_call_output yet means a tool is running.
+        for line in lines.reversed() {
+            guard let obj = json(line), let p = obj["payload"] as? [String: Any],
+                  let t = p["type"] as? String else { continue }
+            switch t {
+            case "function_call": return true
+            case "function_call_output", "message", "task_complete", "user_message": return false
+            default: continue
+            }
+        }
+        return false
+    }
+
     /// First human prompt in the session (for naming). Skips system-injected wrappers.
     static func summarize(_ path: String, agent: Agent) -> String {
         guard let fh = FileHandle(forReadingAtPath: path) else { return "" }
@@ -218,8 +248,16 @@ enum ProcessProbe {
     }
 
     private static func hasChildren(_ pid: Int32) -> Bool {
-        guard let out = capture("/usr/bin/pgrep", ["-P", "\(pid)"]) else { return false }
-        return !out.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        // `-l` lists "pid name" so we can skip claude's own infrastructure children: it spawns
+        // `caffeinate -i -t 300` while working, which would otherwise read as "a tool is running"
+        // for up to 5 minutes after every turn.
+        guard let out = capture("/usr/bin/pgrep", ["-l", "-P", "\(pid)"]) else { return false }
+        for line in out.split(whereSeparator: \.isNewline) {
+            let parts = line.split(separator: " ", maxSplits: 1)
+            guard parts.count == 2 else { continue }
+            if parts[1].trimmingCharacters(in: .whitespaces) != "caffeinate" { return true }
+        }
+        return false
     }
 
     private static func capture(_ path: String, _ args: [String]) -> String? {

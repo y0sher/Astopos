@@ -42,6 +42,39 @@ import Foundation
         #expect(!ProcessProbe.subagentActive(inactive, agent: .claude))
     }
 
+    @Test func claudeAwaitingToolWhenLastEntryIsUnansweredToolUse() {
+        let pending = tmp([
+            #"{"type":"user","message":{"content":"build it"},"timestamp":"2026-06-09T10:00:00.000Z"}"#,
+            #"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]},"isSidechain":false,"timestamp":"2026-06-09T10:00:01.000Z"}"#
+        ])
+        #expect(ProcessProbe.awaitingTool(pending, agent: .claude))
+
+        let answered = tmp([
+            #"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]},"isSidechain":false,"timestamp":"2026-06-09T10:00:01.000Z"}"#,
+            #"{"type":"user","message":{"content":[{"tool_use_id":"t1","type":"tool_result","content":"ok"}]},"timestamp":"2026-06-09T10:05:00.000Z"}"#
+        ])
+        #expect(!ProcessProbe.awaitingTool(answered, agent: .claude))
+
+        let yielded = tmp([
+            #"{"type":"user","message":{"content":"hi"},"timestamp":"2026-06-09T10:00:00.000Z"}"#,
+            #"{"type":"assistant","message":{"content":[{"type":"text","text":"all done"}]},"isSidechain":false,"timestamp":"2026-06-09T10:00:01.000Z"}"#
+        ])
+        #expect(!ProcessProbe.awaitingTool(yielded, agent: .claude))
+    }
+
+    @Test func codexAwaitingToolOnUnansweredFunctionCall() {
+        let pending = tmp([
+            #"{"type":"response_item","payload":{"type":"function_call","name":"shell"},"timestamp":"2026-06-09T10:00:01.000Z"}"#
+        ])
+        #expect(ProcessProbe.awaitingTool(pending, agent: .codex))
+
+        let answered = tmp([
+            #"{"type":"response_item","payload":{"type":"function_call","name":"shell"},"timestamp":"2026-06-09T10:00:01.000Z"}"#,
+            #"{"type":"response_item","payload":{"type":"function_call_output","output":"ok"},"timestamp":"2026-06-09T10:02:00.000Z"}"#
+        ])
+        #expect(!ProcessProbe.awaitingTool(answered, agent: .codex))
+    }
+
     // MARK: Codex
 
     @Test func codexSummaryFromUserMessage() {

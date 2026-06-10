@@ -16,15 +16,17 @@ struct AgentSession: Identifiable, Equatable {
     var summary: String     // first human prompt, for naming
     var lastSeen: Date      // last transcript write (mtime), refreshed each poll
     var subagentsActive: Bool   // a subagent is currently the latest writer (Claude)
-    var toolRunning: Bool   // a child process (tool executing / server) is alive
+    var toolRunning: Bool   // a background child process (e.g. a server it launched) is alive
+    var midTurn: Bool = false   // transcript shows a tool call with no result yet (executing now)
     var endedAt: Date?      // process exited
 
     var idleSeconds: Int { max(0, Int(Date().timeIntervalSince(lastSeen))) }
 
-    /// Working = a tool/subagent is running, or the transcript was written very recently.
-    /// Idle (not working) covers "waiting on your question": quiet, nothing executing.
+    /// Working = the agent is actively executing (subagent, or mid-turn on a tool), or the
+    /// transcript was written very recently. A background child (server) alone is NOT "working" —
+    /// whether it holds the Mac awake is the per-session waitForChildren choice.
     var isWorking: Bool {
-        endedAt == nil && (subagentsActive || toolRunning || idleSeconds < 15)
+        endedAt == nil && (subagentsActive || midTurn || idleSeconds < 15)
     }
 
     var folderName: String {
@@ -56,8 +58,23 @@ struct SessionPolicy: Codable, Equatable {
     }
     var kind: Kind = .off
     var idleMinutes: Int = 10
-    // "Done" is always gated on the session being truly idle: no subagent and no running
-    // tool/server (a live child process keeps it awake automatically).
+    /// Opt-in: ALSO hold the Mac awake for background child processes the session left running
+    /// (a dev server, a backgrounded build). Default off — a stopped session lets the Mac sleep
+    /// even if it spawned a server. A tool executing mid-turn always blocks, regardless.
+    var waitForChildren: Bool = false
+
+    init(kind: Kind = .off, idleMinutes: Int = 10, waitForChildren: Bool = false) {
+        self.kind = kind; self.idleMinutes = idleMinutes; self.waitForChildren = waitForChildren
+    }
+
+    /// Tolerant decoding so policies persisted by an older build (missing newer keys) survive.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try c.decodeIfPresent(Kind.self, forKey: .kind) ?? .off
+        idleMinutes = try c.decodeIfPresent(Int.self, forKey: .idleMinutes) ?? 10
+        waitForChildren = try c.decodeIfPresent(Bool.self, forKey: .waitForChildren) ?? false
+    }
+    private enum CodingKeys: String, CodingKey { case kind, idleMinutes, waitForChildren }
 
     var isMonitored: Bool { kind != .off }
 
