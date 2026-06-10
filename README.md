@@ -18,7 +18,7 @@ A tiny menu-bar app for the moment your agent is mid-flight and you have to get 
 
 **Astopos.** Close the lid, the screen turns off, the work keeps going — and the moment your sessions are actually done, your Mac goes to sleep on its own.
 
-> ⚠️ **Please don't put a running laptop in a closed bag.** With the lid shut and the CPU working, there's no airflow — it can get hot. Astopos is for a laptop sitting on a desk/table with the lid closed, not stuffed in a backpack. Use common sense; we don't recommend leaving it running unattended in an enclosed space.
+> ⚠️ **We don't recommend leaving a running laptop in a closed bag** — lid shut with the CPU working means little airflow, and it can get hot.
 
 ---
 
@@ -43,11 +43,11 @@ From those + the process list it knows each session's **project folder**, a **na
 1. Click the menu-bar icon (🌙 → ⚡️ when armed).
 2. Sessions are grouped by **folder**. Open a folder, find your session by its name (ⓘ shows the full prompt), and pick when it should let the Mac sleep:
    - **On stop** — as soon as it yields a turn (finished, or asking you something).
-   - **Idle N min** — after it's been quiet for N minutes.
+   - **Idle N min** — sleeps once it's been quiet for N minutes. This doubles as a **remote-control window**: if you're driving the session from your phone (SSH'd in) with the lid closed, the quiet timer gives you N minutes to send the next prompt before the Mac sleeps. Send something and the window resets; don't, and it sleeps on its own — so you get a chance to keep going without burning battery if you walk away for good.
    - **Never** — keep awake until you stop it (for a server / long-runner you want to reach).
    - **Off** — don't monitor.
 3. Hit **Arm keep-awake** (one password prompt). Close the lid and go.
-   > For unattended runs, install **silent mode** first (one-time, offered next to the Arm button): the *final revert* also needs admin rights, and without silent mode it would wait on a password prompt nobody is there to answer.
+   > Want the Mac to **sleep itself while the lid stays closed**? Enable **Auto-sleep while away** once (in Advanced). Reverting to normal sleep needs admin rights, so without it the Mac can't revert with the lid shut — it waits until you reopen the lid. Your sessions keep running either way.
 4. When every monitored session is done, Astopos reverts sleep and — if the lid is closed — sleeps the Mac. Or hit **Stop & revert** / **Reset** anytime.
 
 Only work that happens **after** you arm counts — arming a session that's already idle won't sleep immediately.
@@ -62,16 +62,17 @@ Requires macOS 13+ and the Swift toolchain (Xcode or Command Line Tools).
 swift build          # compile
 swift run            # run from the terminal
 make app             # bundle Astopos.app (menu-bar only) — then drag to /Applications
+make dmg             # universal (arm64 + x86_64) ad-hoc-signed .app in a drag-to-Applications DMG
 ```
 
 ## Safety nets
 
-- **Watchdog** — a hard cap (default 2h, configurable in Setup) reverts keep-awake no matter what; if the revert can't run it retries every 5 minutes.
+- **Watchdog** — a hard cap (default 2h, configurable in Advanced) reverts keep-awake no matter what; if the revert can't run it retries every 5 minutes.
 - **Reset** — one button forces normal sleep (lid closes → sleeps), even if something else left the Mac awake.
 - **Self-healing** — reverts on quit, and reconciles on next launch if it ever crashed while armed.
 
 ## Heads-up
 
-- The privileged toggle (`pmset -a disablesleep`) needs an admin password each arm/revert. Install **silent mode** (Setup → scoped `sudoers` entry, locked to the two exact pmset commands) for hands-off, prompt-free operation — effectively required for unattended auto-sleep. If you installed silent mode with an older Astopos, Setup will show it as **stale**; hit Update once.
+- The privileged toggle (`pmset -a disablesleep`) needs an admin password to arm and to revert. You answer the arm prompt yourself; the *revert* is the catch. If you want the Mac to **sleep itself while the lid stays closed**, that revert has to run without a prompt — enable **Auto-sleep while away** (Advanced → scoped `sudoers` entry, locked to the two exact pmset commands). Without it your sessions still keep running; the Mac just waits until you reopen the lid to revert and sleep. Enabled it with an older Astopos? Advanced shows it as **needs update** — hit Update once.
 - **Amphetamine** plays nicely alongside Astopos — they do different jobs: Amphetamine keeps the *display* awake/unlocked while you work with the lid open; Astopos keeps the *system* awake with the lid closed and sleeps it when you're done. Just leave Amphetamine's **"Allow when display is closed"** option **off** — that one fights Astopos for the lid-closed setting. Everything else can stay on.
 - A dark/locked screen while armed is normal — the Mac is still awake and your sessions keep running. The password on reopen is just macOS's screen lock (tied to the display turning off), not a wake-from-sleep.
