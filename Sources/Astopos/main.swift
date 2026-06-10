@@ -14,14 +14,14 @@ if args.contains("--lid") {
 
 if args.contains("--discover") {
     let sessions = ProcessProbe.runningSessions()
-    let busy = ProcessProbe.busyCwds()
+    let busy = ProcessProbe.busyState()
     print("discovered \(sessions.count) running session(s):")
     for s in sessions {
         let idle = ProcessProbe.mtime(s.transcript).map { Int(-$0.timeIntervalSinceNow) } ?? -1
         let sub = ProcessProbe.subagentActive(s.transcript, agent: s.agent)
         let mid = ProcessProbe.awaitingTool(s.transcript, agent: s.agent)
         let summary = ProcessProbe.summarize(s.transcript, agent: s.agent)
-        print("  [\(s.agent.rawValue)] \((s.cwd as NSString).lastPathComponent)  idle=\(idle)s subagent=\(sub) midTurn=\(mid) bg=\(busy.contains(s.cwd))  \"\(summary)\"")
+        print("  [\(s.agent.rawValue)] \((s.cwd as NSString).lastPathComponent)  idle=\(idle)s subagent=\(sub) midTurn=\(mid) agentBusy=\(busy.agentActive.contains(s.cwd)) bg=\(busy.busy.contains(s.cwd))  \"\(summary)\"")
     }
     exit(0)
 }

@@ -18,15 +18,18 @@ struct AgentSession: Identifiable, Equatable {
     var subagentsActive: Bool   // a subagent is currently the latest writer (Claude)
     var toolRunning: Bool   // a background child process (e.g. a server it launched) is alive
     var midTurn: Bool = false   // transcript shows a tool call with no result yet (executing now)
+    var agentBusy: Bool = false // claude is holding its caffeinate (working a turn — e.g. a long
+                                // thinking stretch where the transcript goes quiet for minutes)
     var endedAt: Date?      // process exited
 
     var idleSeconds: Int { max(0, Int(Date().timeIntervalSince(lastSeen))) }
 
-    /// Working = the agent is actively executing (subagent, or mid-turn on a tool), or the
-    /// transcript was written very recently. A background child (server) alone is NOT "working" —
-    /// whether it holds the Mac awake is the per-session waitForChildren choice.
+    /// Working = the agent is actively executing (subagent, mid-turn on a tool, or holding its
+    /// keep-awake while generating), or the transcript was written very recently. A background
+    /// child (server) alone is NOT "working" — whether it holds the Mac awake is the per-session
+    /// waitForChildren choice.
     var isWorking: Bool {
-        endedAt == nil && (subagentsActive || midTurn || idleSeconds < 15)
+        endedAt == nil && (subagentsActive || midTurn || agentBusy || idleSeconds < 15)
     }
 
     var folderName: String {

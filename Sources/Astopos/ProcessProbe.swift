@@ -132,15 +132,25 @@ enum ProcessProbe {
 
     // MARK: - background-process (server / running tool) detection
 
-    /// cwds that currently have a claude/codex process with a live child process (a tool executing
-    /// or a server it launched). One pass for the whole poll.
-    static func busyCwds() -> Set<String> {
-        var out = Set<String>()
+    /// Child-process probe, one pass for the whole poll. Children are split into two signals:
+    ///   • busy        — a real child (tool executing / server it launched) is alive
+    ///   • agentActive — claude is holding its own `caffeinate -i -t 300`, which it keeps alive
+    ///     the whole time it's working a turn. This catches long generation stretches (extended
+    ///     thinking) where the transcript goes quiet for minutes with no tool running — the one
+    ///     state the transcript alone can't distinguish from "stopped".
+    static func busyState() -> (busy: Set<String>, agentActive: Set<String>) {
+        var busy = Set<String>(), agent = Set<String>()
         for pid in pids(named: "claude") + pids(named: "codex") {
-            if hasChildren(pid), let c = cwdOf(pid) { out.insert(c) }
+            let kids = childKinds(pid)
+            guard kids.real || kids.caffeinate, let c = cwdOf(pid) else { continue }
+            if kids.real { busy.insert(c) }
+            if kids.caffeinate { agent.insert(c) }
         }
-        return out
+        return (busy, agent)
     }
+
+    /// cwds that currently have a real (non-caffeinate) child — kept for the --probe debug path.
+    static func busyCwds() -> Set<String> { busyState().busy }
 
     static func pids(forCwd cwd: String) -> [Int32] {
         (pids(named: "claude") + pids(named: "codex")).filter { cwdOf($0) == cwd }
@@ -247,17 +257,17 @@ enum ProcessProbe {
         return out.split(whereSeparator: \.isNewline).first(where: { $0.hasPrefix("n") }).map { String($0.dropFirst()) }
     }
 
-    private static func hasChildren(_ pid: Int32) -> Bool {
-        // `-l` lists "pid name" so we can skip claude's own infrastructure children: it spawns
-        // `caffeinate -i -t 300` while working, which would otherwise read as "a tool is running"
-        // for up to 5 minutes after every turn.
-        guard let out = capture("/usr/bin/pgrep", ["-l", "-P", "\(pid)"]) else { return false }
+    /// Classify a process's children: real work (tool/server) vs claude's own caffeinate helper.
+    /// (`pgrep -l` lists "pid name".)
+    private static func childKinds(_ pid: Int32) -> (real: Bool, caffeinate: Bool) {
+        guard let out = capture("/usr/bin/pgrep", ["-l", "-P", "\(pid)"]) else { return (false, false) }
+        var real = false, caf = false
         for line in out.split(whereSeparator: \.isNewline) {
             let parts = line.split(separator: " ", maxSplits: 1)
             guard parts.count == 2 else { continue }
-            if parts[1].trimmingCharacters(in: .whitespaces) != "caffeinate" { return true }
+            if parts[1].trimmingCharacters(in: .whitespaces) == "caffeinate" { caf = true } else { real = true }
         }
-        return false
+        return (real, caf)
     }
 
     private static func capture(_ path: String, _ args: [String]) -> String? {

@@ -7,12 +7,12 @@ import Foundation
     let now = Date()
 
     private func session(lastSeenAgo: TimeInterval = 0, subagents: Bool = false,
-                         tool: Bool = false, midTurn: Bool = false,
+                         tool: Bool = false, midTurn: Bool = false, agentBusy: Bool = false,
                          endedAgo: TimeInterval? = nil) -> AgentSession {
         AgentSession(id: "s", agent: .claude, cwd: "/p/proj", transcript: "/t.jsonl",
                      summary: "", lastSeen: now.addingTimeInterval(-lastSeenAgo),
                      subagentsActive: subagents, toolRunning: tool, midTurn: midTurn,
-                     endedAt: endedAgo.map { now.addingTimeInterval(-$0) })
+                     agentBusy: agentBusy, endedAt: endedAgo.map { now.addingTimeInterval(-$0) })
     }
     private func policy(_ k: SessionPolicy.Kind, idle: Int = 10, wait: Bool = false) -> SessionPolicy {
         SessionPolicy(kind: k, idleMinutes: idle, waitForChildren: wait)
@@ -68,6 +68,13 @@ import Foundation
 
     @Test func subagentBlocks() {
         #expect(!done(session(lastSeenAgo: 700, subagents: true), policy(.idle, idle: 10), armedAgo: 2000))
+    }
+
+    @Test func agentBusyBlocksLongGenerationStretches() {
+        // Extended thinking: transcript quiet for minutes, no tool pending, but claude is holding
+        // its caffeinate — must not read as stopped (observed live: a 3-minute write gap mid-turn).
+        #expect(!done(session(lastSeenAgo: 700, agentBusy: true), policy(.onStop), armedAgo: 2000))
+        #expect(!done(session(lastSeenAgo: 700, agentBusy: true), policy(.idle, idle: 10), armedAgo: 2000))
     }
 
     @Test func endedIsDoneOnceArmed() {

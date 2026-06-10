@@ -27,17 +27,19 @@ import Foundation
 
 @Suite struct AgentSessionTests {
     private func make(lastSeenAgo: TimeInterval, subagents: Bool = false, tool: Bool = false,
-                      midTurn: Bool = false, ended: Bool = false, summary: String = "",
-                      cwd: String = "/a/b/proj") -> AgentSession {
+                      midTurn: Bool = false, agentBusy: Bool = false, ended: Bool = false,
+                      summary: String = "", cwd: String = "/a/b/proj") -> AgentSession {
         AgentSession(id: "s", agent: .claude, cwd: cwd, transcript: "/t.jsonl", summary: summary,
                      lastSeen: Date().addingTimeInterval(-lastSeenAgo), subagentsActive: subagents,
-                     toolRunning: tool, midTurn: midTurn, endedAt: ended ? Date() : nil)
+                     toolRunning: tool, midTurn: midTurn, agentBusy: agentBusy,
+                     endedAt: ended ? Date() : nil)
     }
 
     @Test func isWorking() {
         #expect(make(lastSeenAgo: 1).isWorking)               // recent write
         #expect(make(lastSeenAgo: 9999, midTurn: true).isWorking)    // tool executing mid-turn
         #expect(make(lastSeenAgo: 9999, subagents: true).isWorking)  // subagent
+        #expect(make(lastSeenAgo: 9999, agentBusy: true).isWorking)  // generating (caffeinate held)
         #expect(!make(lastSeenAgo: 9999, tool: true).isWorking)      // bg child alone ≠ working
         #expect(!make(lastSeenAgo: 100).isWorking)            // quiet, nothing running → idle
         #expect(!make(lastSeenAgo: 1, ended: true).isWorking) // ended → not working

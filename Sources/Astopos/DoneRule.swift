@@ -9,7 +9,9 @@ enum DoneRule {
         // A session whose process exited can't do more work — done under any trigger.
         if s.endedAt != nil { return true }
         guard let quiet = p.quietSeconds else { return false }    // off / never aren't time-based
-        guard !s.subagentsActive, !s.midTurn else { return false } // actively executing a turn
+        // Actively executing: a subagent, a tool awaiting its result, or the agent holding its
+        // caffeinate while it generates (long thinking can keep the transcript quiet for minutes).
+        guard !s.subagentsActive, !s.midTurn, !s.agentBusy else { return false }
         if p.waitForChildren, s.toolRunning { return false }       // opted in: hold for bg/servers
         // Quiet time counts from the LATER of last activity and the arm. Arming mid-flight works
         // (each transcript write pushes the reference forward); arming an already-stopped session

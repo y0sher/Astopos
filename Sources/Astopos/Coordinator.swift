@@ -65,7 +65,7 @@ final class Coordinator: ObservableObject {
                                           needsSummary: $0.summary.isEmpty) }
         Task.detached(priority: .utility) { [weak self] in
             let running = ProcessProbe.runningSessions()
-            let busy = ProcessProbe.busyCwds()   // cwds with a running tool/server (one pass)
+            let busy = ProcessProbe.busyState()   // children: real tools/servers + agent caffeinate
             var targets = known
             for r in running where !targets.contains(where: { $0.transcript == r.transcript }) {
                 targets.append((transcript: r.transcript, agent: r.agent, needsSummary: true))
@@ -85,7 +85,8 @@ final class Coordinator: ObservableObject {
         }
     }
 
-    private func apply(running: [ProcessProbe.RunningSession], busy: Set<String>,
+    private func apply(running: [ProcessProbe.RunningSession],
+                       busy: (busy: Set<String>, agentActive: Set<String>),
                        scans: [String: TranscriptScan]) {
         polling = false
         let runningIds = Set(running.map(\.id))
@@ -109,7 +110,8 @@ final class Coordinator: ObservableObject {
             state.sessions[i].lastSeen = scan.mtime ?? s.lastSeen
             state.sessions[i].subagentsActive = scan.subagent
             state.sessions[i].midTurn = scan.midTurn
-            state.sessions[i].toolRunning = busy.contains(s.cwd)
+            state.sessions[i].toolRunning = busy.busy.contains(s.cwd)
+            state.sessions[i].agentBusy = busy.agentActive.contains(s.cwd)
             if s.summary.isEmpty, let sum = scan.summary, !sum.isEmpty {
                 state.sessions[i].summary = sum
             }

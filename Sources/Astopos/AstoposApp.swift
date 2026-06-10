@@ -407,6 +407,7 @@ struct SessionRow: View {
         if sess.endedAt != nil { return "ended" }
         if sess.subagentsActive { return "subagent" }
         if sess.midTurn { return "running a tool" }
+        if sess.agentBusy { return "working" }   // generating (claude holds its keep-awake)
         if monitored, pol.waitForChildren, sess.toolRunning { return "background process running" }
         if sess.idleSeconds < 15 { return "working" }
         let s = sess.idleSeconds
