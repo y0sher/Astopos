@@ -175,6 +175,16 @@ final class AppState: ObservableObject {
     var monitoredSessions: [AgentSession] { sessions.filter { isMonitored($0.id) } }
     var hasSelection: Bool { sessions.contains { isMonitored($0.id) } }
 
+    /// Armed and every monitored session already met its trigger (e.g. lid stayed open so we
+    /// didn't sleep, or the revert is pending) — lets the menu icon show "done" at a glance.
+    var allMonitoredDone: Bool {
+        guard mode == .armed else { return false }
+        let m = monitoredSessions
+        guard !m.isEmpty else { return false }
+        let now = Date()
+        return m.allSatisfy { DoneRule.isDone($0, policy: policy(for: $0.id), armedAt: armedAt, now: now) }
+    }
+
     func policy(for id: String) -> SessionPolicy { policies[id] ?? SessionPolicy() }
 
     /// Mutate one field of a session's policy in place.

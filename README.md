@@ -69,7 +69,7 @@ make dmg             # universal (arm64 + x86_64) ad-hoc-signed .app in a drag-t
 
 ## Safety nets
 
-- **Watchdog** — a hard cap (default 2h, configurable in Advanced) reverts keep-awake no matter what; if the revert can't run it retries every 5 minutes.
+- **Hard cap** — a watchdog (default 2h, configurable in Advanced) reverts keep-awake no matter what; if the revert can't run it retries every 5 minutes.
 - **Reset** — one button forces normal sleep (lid closes → sleeps), even if something else left the Mac awake.
 - **Self-healing** — reverts on quit, and reconciles on next launch if it ever crashed while armed.
 

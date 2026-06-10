@@ -30,10 +30,15 @@ struct MenuIcon: View {
     @ObservedObject var state: AppState
     var body: some View {
         if state.mode == .armed {
-            let working = state.monitoredSessions.filter(\.isWorking).count
-            HStack(spacing: 2) {
-                Image(systemName: "bolt.fill")
-                if working > 0 { Text("\(working)") }
+            if state.allMonitoredDone {
+                // Everything finished but keep-awake is still on (lid open, or revert pending).
+                Image(systemName: "bolt.badge.checkmark")
+            } else {
+                let working = state.monitoredSessions.filter(\.isWorking).count
+                HStack(spacing: 2) {
+                    Image(systemName: "bolt.fill")
+                    if working > 0 { Text("\(working)") }
+                }
             }
         } else {
             Image(systemName: "moon")
@@ -78,6 +83,7 @@ struct PanelView: View {
     @State private var confirmReset = false
     @State private var launchAtLogin = false
     @State private var sessionsHeight: CGFloat = 0
+    @State private var showAutoRestoreHelp = false
 
     private var monitored: [AgentSession] { state.monitoredSessions.sorted { $0.lastSeen > $1.lastSeen } }
 
@@ -182,7 +188,7 @@ struct PanelView: View {
     private var sessionsSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("MONITORED · \(monitored.count)").font(.caption.bold()).foregroundStyle(.secondary)
+                Text("Monitored · \(monitored.count)").font(.caption.bold()).foregroundStyle(.secondary)
                 Spacer()
                 if !monitored.isEmpty { Button("Clear") { state.setAll(.off) }.font(.caption) }
             }
@@ -241,8 +247,8 @@ struct PanelView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 Text(state.hasSelection
-                     ? "Stays awake (screen off when lid shut). Sleeps once every monitored session finishes."
-                     : "Nothing picked — Arm monitors your most recent session (sleeps when it stops).")
+                     ? "Stays awake (screen off when lid shut). Sleeps once every monitored session finishes. One password prompt."
+                     : "Nothing picked — Arm monitors your most recent session (sleeps when it stops). One password prompt.")
                     .font(.caption2).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -305,8 +311,19 @@ struct PanelView: View {
                             if SudoersInstaller.install() { coord.refreshSudoStatus() }
                         }.font(.caption)
                     }
+                    Button { showAutoRestoreHelp.toggle() } label: {
+                        Image(systemName: "questionmark.circle").foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("What does auto-restore sleep do?")
+                    .popover(isPresented: $showAutoRestoreHelp, arrowEdge: .trailing) {
+                        Text("The Mac sleeps when your sessions finish either way. Auto-restore also turns the keep-awake setting back off without a password, so the next time you close the lid it sleeps normally. Without it the Mac still sleeps — the setting just stays on until you hit Stop & revert or Reset.\n\nEnabling installs a scoped sudoers rule, locked to the two exact pmset commands (one admin prompt).")
+                            .font(.caption)
+                            .padding(12)
+                            .frame(width: 280)
+                    }
                 }
-                Text("The Mac sleeps when your sessions finish either way. This also turns the keep-awake setting back off without a password, so the next time you close the lid it sleeps normally. Without it the Mac still sleeps, but the setting stays on until you hit Stop/Reset. Installs a scoped sudoers rule, locked to the two pmset commands (one admin prompt).")
+                Text("Turns keep-awake back off afterward, no password needed.")
                     .font(.caption2).foregroundStyle(.secondary)
                 HStack {
                     Text("Hard cap:").font(.caption).foregroundStyle(.secondary)

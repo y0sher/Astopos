@@ -200,7 +200,7 @@ final class Coordinator: ObservableObject {
             state.armedAt = Date()
             state.mode = .armed
             sleptForDone = false
-            state.lastStatus = "Armed — watching \(who)"
+            state.lastStatus = "Armed — monitoring \(who)"
             startWatchdog()
             schedulePoll()   // slow to 60s while armed
             syncDisplayAwake()
