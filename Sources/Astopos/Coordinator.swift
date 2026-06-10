@@ -124,8 +124,6 @@ final class Coordinator: ObservableObject {
             state.sessions[i].lastSeen = scan.mtime ?? s.lastSeen
             state.sessions[i].subagentsActive = scan.subagent
             state.sessions[i].midTurn = scan.midTurn
-            state.sessions[i].toolRunning = busy.busy.contains(s.cwd)
-            state.sessions[i].agentBusy = busy.agentActive.contains(s.cwd)
             if s.summary.isEmpty, let sum = scan.summary, !sum.isEmpty {
                 state.sessions[i].summary = sum
             }
@@ -135,6 +133,21 @@ final class Coordinator: ObservableObject {
                Date().timeIntervalSince(state.sessions[i].lastSeen) > 60 {
                 state.sessions[i].endedAt = Date()
             }
+        }
+        // Child-process signals (caffeinate / tools / servers) are only known per CWD — several
+        // sessions can share one folder, and claude doesn't hold its transcript open, so there is
+        // no exact pid→session mapping. Attribute them to the most-recently-written session in
+        // each cwd: the writer is the worker. Without this, one working session marked all of its
+        // idle siblings "working" (and blocked their done-evaluation).
+        var latestByCwd: [String: Date] = [:]
+        for s in state.sessions where s.endedAt == nil {
+            latestByCwd[s.cwd] = max(latestByCwd[s.cwd] ?? .distantPast, s.lastSeen)
+        }
+        for i in state.sessions.indices {
+            let s = state.sessions[i]
+            let isLatestInCwd = s.endedAt == nil && s.lastSeen >= (latestByCwd[s.cwd] ?? .distantPast)
+            state.sessions[i].toolRunning = isLatestInCwd && busy.busy.contains(s.cwd)
+            state.sessions[i].agentBusy = isLatestInCwd && busy.agentActive.contains(s.cwd)
         }
         // First scan done: drop persisted policies for sessions that no longer exist.
         if !prunedOnce { prunedOnce = true; state.prunePolicies() }

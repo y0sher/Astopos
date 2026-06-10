@@ -15,13 +15,21 @@ if args.contains("--lid") {
 if args.contains("--discover") {
     let sessions = ProcessProbe.runningSessions()
     let busy = ProcessProbe.busyState()
+    // Mirror the app's attribution: cwd-level child signals belong to the most recent writer.
+    var latestByCwd: [String: Date] = [:]
+    for s in sessions {
+        let m = ProcessProbe.mtime(s.transcript) ?? .distantPast
+        latestByCwd[s.cwd] = max(latestByCwd[s.cwd] ?? .distantPast, m)
+    }
     print("discovered \(sessions.count) running session(s):")
     for s in sessions {
-        let idle = ProcessProbe.mtime(s.transcript).map { Int(-$0.timeIntervalSinceNow) } ?? -1
+        let mtime = ProcessProbe.mtime(s.transcript) ?? .distantPast
+        let idle = Int(-mtime.timeIntervalSinceNow)
+        let isLatest = mtime >= (latestByCwd[s.cwd] ?? .distantPast)
         let sub = ProcessProbe.subagentActive(s.transcript, agent: s.agent)
         let mid = ProcessProbe.awaitingTool(s.transcript, agent: s.agent)
         let summary = ProcessProbe.summarize(s.transcript, agent: s.agent)
-        print("  [\(s.agent.rawValue)] \((s.cwd as NSString).lastPathComponent)  idle=\(idle)s subagent=\(sub) midTurn=\(mid) agentBusy=\(busy.agentActive.contains(s.cwd)) bg=\(busy.busy.contains(s.cwd))  \"\(summary)\"")
+        print("  [\(s.agent.rawValue)] \((s.cwd as NSString).lastPathComponent)  idle=\(idle)s subagent=\(sub) midTurn=\(mid) agentBusy=\(isLatest && busy.agentActive.contains(s.cwd)) bg=\(isLatest && busy.busy.contains(s.cwd))  \"\(summary)\"")
     }
     exit(0)
 }
