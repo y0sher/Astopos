@@ -246,7 +246,7 @@ struct PanelView: View {
                 Text("Tracks Claude & Codex sessions by polling their transcripts — nothing is installed into either tool.")
                     .font(.caption2).foregroundStyle(.secondary)
                 HStack {
-                    Text("Auto-sleep while away:").font(.caption).foregroundStyle(.secondary)
+                    Text("Auto-restore sleep:").font(.caption).foregroundStyle(.secondary)
                     if state.silentSudoWorks {
                         Text("on").font(.caption).foregroundStyle(.green)
                         Button("Turn off") {
@@ -264,7 +264,7 @@ struct PanelView: View {
                         }.font(.caption)
                     }
                 }
-                Text("Lets Astopos revert and sleep the Mac without a password, so it sleeps itself once your sessions finish — even with the lid closed and you away. Without it, sessions still keep running; the Mac just waits until you reopen the lid. Installs a scoped sudoers rule, locked to the two pmset commands (one admin prompt).")
+                Text("The Mac sleeps when your sessions finish either way. This also turns the keep-awake setting back off without a password, so the next time you close the lid it sleeps normally. Without it the Mac still sleeps, but the setting stays on until you hit Stop/Reset. Installs a scoped sudoers rule, locked to the two pmset commands (one admin prompt).")
                     .font(.caption2).foregroundStyle(.secondary)
                 HStack {
                     Text("Hard cap:").font(.caption).foregroundStyle(.secondary)

@@ -29,6 +29,14 @@ enum PowerManager {
     @discardableResult
     static func disarm() -> Bool { privileged(pmsetArgs(arm: false)) }
 
+    /// Restore normal sleep WITHOUT ever prompting — silent sudo only, no osascript fallback.
+    /// Used by the done-action so a closed-lid Mac never gets an unanswerable password dialog:
+    /// we sleep the Mac either way, and only auto-restore the setting if it can be done silently.
+    @discardableResult
+    static func disarmSilent() -> Bool {
+        runOK("/usr/bin/sudo", ["-n", "/usr/bin/pmset"] + pmsetArgs(arm: false))
+    }
+
     // MARK: - unprivileged actions
 
     /// Sleep the whole machine immediately. `pmset sleepnow` needs no privileges and no TCC

@@ -13,6 +13,7 @@ final class Coordinator: ObservableObject {
     private var polling = false              // a background probe pass is in flight
     private var privilegedInFlight = false   // at most one pmset/admin-dialog at a time
     private var prunedOnce = false           // stale persisted policies dropped after first scan
+    private var sleptForDone = false         // one-shot: already slept for the current done-state
 
     init() {
         AppDelegate.coord = self   // so quit/signal paths can revert even if the panel never opened
@@ -177,6 +178,7 @@ final class Coordinator: ObservableObject {
             }
             state.armedAt = Date()
             state.mode = .armed
+            sleptForDone = false
             state.lastStatus = "Armed — watching \(who)"
             startWatchdog()
             schedulePoll()   // slow to 60s while armed
@@ -230,24 +232,44 @@ final class Coordinator: ObservableObject {
         let allDone = sessions.allSatisfy {
             DoneRule.isDone($0, policy: state.policy(for: $0.id), armedAt: state.armedAt, now: now)
         }
-        guard allDone else { return }
+        // Work resumed (a session is active again) → re-arm the one-shot so a later done-state can
+        // sleep again.
+        guard allDone else { sleptForDone = false; return }
         fireAction()
     }
 
     private func fireAction() {
-        // All monitored sessions met their criteria → restore normal sleep. Force the actual sleep
-        // only when the lid is closed (the walked-away case this app exists for); lid open means
-        // someone is at the machine, so reverting is enough — don't sleep in their face.
+        // All monitored sessions met their criteria. The headline action is to SLEEP the Mac — and
+        // that's independent of restoring the keep-awake setting. `pmset sleepnow` needs no
+        // privileges and sleeps the Mac whether or not `disablesleep` is still set, so we sleep
+        // regardless. Restoring the setting (so the NEXT lid-close sleeps normally) is the
+        // privileged part: we attempt it SILENTLY only — never a password dialog on a closed-lid
+        // Mac. With Auto-restore (silent sudo) it succeeds and we're cleanly normal; without it we
+        // leave the setting on (you revert later via Stop/Reset/relaunch) and the Mac still sleeps.
+        // Sleep only with the lid closed (the walked-away case); lid open means you're here.
         // Unknown lid (no clamshell sensor) → treat as closed and sleep.
         let lidIsClosed = ProcessProbe.lidClosed() ?? true
         Task {
-            let note = lidIsClosed ? "Done — all sessions finished; sleeping"
-                                   : "Done — all sessions finished (lid open, so staying awake)"
-            // Only sleep if the revert succeeded (otherwise disablesleep is still on and the
-            // sleep would be blocked anyway). On failure the next poll retries; runPrivileged
-            // guarantees only one password dialog can be pending.
-            if await disarm(note), lidIsClosed {
+            let reverted = await runPrivileged({ PowerManager.disarmSilent() }) == true
+            if reverted {
+                stopWatchdog()
+                state.armedAt = nil
+                PowerManager.releaseDisplayAwake()
+                StateStore.save(DesiredState(mode: .normal, armedAt: nil, reason: "done — restored normal sleep"))
+                state.mode = .normal
+                schedulePoll()
+            }
+            if lidIsClosed {
+                guard !sleptForDone else { return }   // one-shot: don't re-sleep every poll
+                sleptForDone = true
+                state.lastStatus = reverted
+                    ? "Done — all sessions finished; sleeping"
+                    : "Done — sleeping (keep-awake still on; reopen the lid or hit Stop to restore)"
                 PowerManager.sleepNow()
+            } else if state.mode == .armed {
+                // Lid open → you're here, so we don't sleep. We also don't pop a password dialog;
+                // just say how to restore normal sleep if you want it now.
+                state.lastStatus = "Done — all sessions finished. Hit Stop & revert to restore normal sleep."
             }
         }
     }
