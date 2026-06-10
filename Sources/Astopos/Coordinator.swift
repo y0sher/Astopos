@@ -41,6 +41,7 @@ final class Coordinator: ObservableObject {
     private func schedulePoll() {
         evalTimer?.invalidate()
         let interval: TimeInterval = state.mode == .armed ? 60 : 15
+        state.pollIntervalSeconds = Int(interval)
         evalTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.poll() }
         }
@@ -125,6 +126,14 @@ final class Coordinator: ObservableObject {
         // First scan done: drop persisted policies for sessions that no longer exist.
         if !prunedOnce { prunedOnce = true; state.prunePolicies() }
 
+        state.lastPollAt = Date()
+        // Status decay: an old message ("Couldn't arm…") must not haunt the header for hours —
+        // after 10 quiet minutes in normal mode, return to the calm baseline.
+        if state.mode == .normal, state.lastStatus != "Normal",
+           Date().timeIntervalSince(state.lastStatusAt) > 600 {
+            state.lastStatus = "Normal"
+        }
+
         evaluateDone()
         // Keep the safety cap from firing mid-work: while any monitored session is genuinely
         // active, push the watchdog out. It only fires after a long stretch with nothing happening.
@@ -164,9 +173,16 @@ final class Coordinator: ObservableObject {
     // MARK: - arming (called AFTER which/when/how is configured)
 
     func arm() {
-        guard state.hasSelection else {
-            state.lastStatus = "Pick a 'sleep when' option on a session first"
-            return
+        // Quick-pick: Arm with nothing selected monitors the most recent live session (sleep on
+        // stop) — the 80% case is "watch the run I just kicked off", and a button that answers
+        // beats a disabled one.
+        if !state.hasSelection {
+            guard let latest = state.sessions.filter({ $0.endedAt == nil })
+                .max(by: { $0.lastSeen < $1.lastSeen }) else {
+                state.lastStatus = "No Claude/Codex sessions detected"
+                return
+            }
+            state.updatePolicy(latest.id) { $0.kind = .onStop }
         }
         guard !privilegedInFlight else { return }
         let who = state.monitoredSessions.map(\.label).joined(separator: ", ")

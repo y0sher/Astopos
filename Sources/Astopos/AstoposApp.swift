@@ -83,14 +83,17 @@ struct PanelView: View {
     }
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 10) {
+        // Pinned layout: the header (state) and controls (the CTA) never scroll away — only the
+        // session list scrolls. With a couple of folders expanded the Arm button used to slide
+        // below the fold.
+        VStack(alignment: .leading, spacing: 0) {
+            VStack(alignment: .leading, spacing: 8) {
                 header
                 if state.mode == .armed {
                     VStack(alignment: .leading, spacing: 3) {
                         Label("A dark screen is normal — the Mac is awake and your sessions keep running.",
                               systemImage: "bolt.fill")
-                            .font(.caption2).foregroundStyle(.yellow)
+                            .font(.caption2).foregroundStyle(.orange)
                             .fixedSize(horizontal: false, vertical: true)
                         if let deadline = state.watchdogDeadline {
                             Text("Hard cap: reverts in \(shortDuration(Int(deadline.timeIntervalSinceNow))) if nothing is active.")
@@ -98,24 +101,48 @@ struct PanelView: View {
                         }
                     }
                 }
-                Divider()
-                sessionsSection
-                Divider()
+            }
+            .padding(.horizontal, 14).padding(.top, 14).padding(.bottom, 10)
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 6) {
+                    sessionsSection
+                }
+                .padding(.horizontal, 14).padding(.vertical, 10)
+            }
+            .frame(maxHeight: 330)
+            Divider()
+            VStack(alignment: .leading, spacing: 10) {
                 controlButtons
                 Divider()
                 advancedSection
                 Divider()
-                Button("Quit Astopos") { coord.shutdown(); NSApp.terminate(nil) }
+                HStack {
+                    Button("Quit Astopos") { coord.shutdown(); NSApp.terminate(nil) }
+                    Spacer()
+                    if let polled = state.lastPollAt {
+                        Text("checked \(shortDuration(Int(Date().timeIntervalSince(polled)))) ago · every \(state.pollIntervalSeconds)s")
+                            .font(.caption2).foregroundStyle(.tertiary)
+                            .help("Astopos re-scans sessions on this cadence; the lid watcher ticks every 3s")
+                    }
+                }
             }
-            .padding(14)
-            .frame(width: 340)
+            .padding(.horizontal, 14).padding(.top, 10).padding(.bottom, 14)
         }
-        .frame(maxHeight: 620)
+        .frame(width: 340)
         .onAppear {
             AppDelegate.coord = coord
             coord.refreshSudoStatus()
             launchAtLogin = Bundle.main.bundleIdentifier != nil && SMAppService.mainApp.status == .enabled
         }
+    }
+
+    /// Status message with an age suffix once it's no longer fresh — "Couldn't arm (permission
+    /// denied) · 2h ago" reads as history; without the suffix it reads as a live problem.
+    private var agedStatus: String {
+        let age = Int(Date().timeIntervalSince(state.lastStatusAt))
+        guard state.lastStatus != "Normal", age > 120 else { return state.lastStatus }
+        return "\(state.lastStatus) · \(shortDuration(age)) ago"
     }
 
     // MARK: header
@@ -125,9 +152,9 @@ struct PanelView: View {
                 .foregroundStyle(state.mode == .armed ? .yellow : .secondary)
             VStack(alignment: .leading, spacing: 1) {
                 Text("Astopos").font(.headline)
-                Text(state.lastStatus).font(.caption).foregroundStyle(.secondary)
+                Text(agedStatus).font(.caption).foregroundStyle(.secondary)
                     .lineLimit(2).fixedSize(horizontal: false, vertical: true)
-                    .help(state.lastStatus)
+                    .help(agedStatus)
             }
             Spacer()
             Text(state.mode == .armed ? "AWAKE" : "NORMAL")
@@ -200,10 +227,9 @@ struct PanelView: View {
                     Label("Arm keep-awake", systemImage: "bolt.fill").frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(!state.hasSelection)
                 Text(state.hasSelection
                      ? "Stays awake (screen off when lid shut). Sleeps once every monitored session finishes."
-                     : "Pick a “sleep when” for a session to enable Arm.")
+                     : "Nothing picked — Arm monitors your most recent session (sleeps when it stops).")
                     .font(.caption2).foregroundStyle(.secondary)
             }
             // Network reminder — shown while armed (when it matters most) and pre-arm once a

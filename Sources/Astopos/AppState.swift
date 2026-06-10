@@ -133,7 +133,15 @@ final class AppState: ObservableObject {
         didSet { UserDefaults.standard.set(watchdogMinutes, forKey: Keys.watchdogMinutes) }
     }
 
-    @Published var lastStatus: String = "Normal"
+    @Published var lastStatus: String = "Normal" { didSet { lastStatusAt = Date() } }
+    /// When lastStatus was set — lets the UI age stale messages ("· 2h ago") and the poll loop
+    /// decay old errors back to a calm baseline instead of haunting the header forever.
+    var lastStatusAt: Date = Date()
+
+    /// Liveness: when the last poll completed and the current cadence. Rendered in the panel so
+    /// "is it frozen?" is answerable at a glance.
+    @Published var lastPollAt: Date?
+    @Published var pollIntervalSeconds: Int = 15
 
     private enum Keys {
         static let policies = "policies"

@@ -48,7 +48,7 @@ From those + the process list it knows each session's **project folder**, a **na
    - **Off** — don't monitor.
 
    Each monitored session also has a **Wait for background processes** checkbox (off by default): tick it if servers or backgrounded builds the session spawned should hold the Mac awake too.
-3. Hit **Arm keep-awake** (one password prompt). Close the lid and go.
+3. Hit **Arm keep-awake** (one password prompt). Close the lid and go. In a hurry? Hit **Arm** without picking anything — it monitors your most recent session (sleep on stop) automatically.
    > Astopos sleeps the Mac when your sessions finish — no password needed. *Turning the keep-awake setting back off* afterward (so the next lid-close sleeps normally) does need admin: enable **Auto-restore sleep** once (in Advanced) to have it happen without a prompt. Skip it and the Mac still sleeps — the setting just stays on until you revert it yourself (**Stop & revert** / **Reset**).
 4. When every monitored session is done, Astopos sleeps the Mac (if the lid's closed). Or hit **Stop & revert** / **Reset** anytime.
 
