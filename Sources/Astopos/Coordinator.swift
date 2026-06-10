@@ -10,12 +10,15 @@ final class Coordinator: ObservableObject {
     private var evalTimer: Timer?
     private var lidTimer: Timer?
     private var lidClosed = false
-    private var armedAt: Date?   // only work finishing AFTER this counts as "done"
+    private var polling = false              // a background probe pass is in flight
+    private var privilegedInFlight = false   // at most one pmset/admin-dialog at a time
+    private var prunedOnce = false           // stale persisted policies dropped after first scan
 
     init() {
+        AppDelegate.coord = self   // so quit/signal paths can revert even if the panel never opened
         // Layer 1 safety: undo anything a previous run left armed.
         if let note = StateStore.reconcile() { state.lastStatus = note }
-        state.silentSudoInstalled = SudoersInstaller.isInstalled
+        refreshSudoStatus()
 
         // Seed + scan right away, then poll on a cadence (60s while armed — battery-light, per the
         // user's request; 15s while idle so the picker feels responsive).
@@ -29,6 +32,11 @@ final class Coordinator: ObservableObject {
         }
     }
 
+    func refreshSudoStatus() {
+        state.silentSudoInstalled = SudoersInstaller.isInstalled
+        state.silentSudoWorks = SudoersInstaller.works()
+    }
+
     private func schedulePoll() {
         evalTimer?.invalidate()
         let interval: TimeInterval = state.mode == .armed ? 60 : 15
@@ -37,24 +45,69 @@ final class Coordinator: ObservableObject {
         }
     }
 
+    /// What one background probe pass read for a transcript.
+    private struct TranscriptScan {
+        let mtime: Date?
+        let subagent: Bool
+        let summary: String?
+    }
+
     /// One poll cycle: discover running sessions, scan each transcript tail, mark ended ones, then
-    /// evaluate the done-policy. No hooks required.
+    /// evaluate the done-policy. All process spawning (pgrep/lsof can take seconds) and file
+    /// reading happens off the main thread so the panel never freezes; results are applied back
+    /// on the main actor.
     private func poll() {
-        let running = ProcessProbe.runningSessions()
+        guard !polling else { return }
+        polling = true
+        let known = state.sessions.map { (transcript: $0.transcript, agent: $0.agent,
+                                          needsSummary: $0.summary.isEmpty) }
+        Task.detached(priority: .utility) { [weak self] in
+            let running = ProcessProbe.runningSessions()
+            let busy = ProcessProbe.busyCwds()   // cwds with a running tool/server (one pass)
+            var targets = known
+            for r in running where !targets.contains(where: { $0.transcript == r.transcript }) {
+                targets.append((transcript: r.transcript, agent: r.agent, needsSummary: true))
+            }
+            var scans: [String: TranscriptScan] = [:]
+            for t in targets where scans[t.transcript] == nil {
+                scans[t.transcript] = TranscriptScan(
+                    mtime: ProcessProbe.mtime(t.transcript),
+                    subagent: ProcessProbe.subagentActive(t.transcript, agent: t.agent),
+                    summary: t.needsSummary ? ProcessProbe.summarize(t.transcript, agent: t.agent) : nil)
+            }
+            let result = scans
+            await MainActor.run { [weak self] in
+                self?.apply(running: running, busy: busy, scans: result)
+            }
+        }
+    }
+
+    private func apply(running: [ProcessProbe.RunningSession], busy: Set<String>,
+                       scans: [String: TranscriptScan]) {
+        polling = false
         let runningIds = Set(running.map(\.id))
-        // Drop sessions that have ended and are gone (already evaluated in a prior poll) so the
-        // list stays bounded instead of accumulating "ended" rows.
-        state.sessions.removeAll { $0.endedAt != nil && !runningIds.contains($0.id) }
+        // Drop sessions that have ended and are gone so the list stays bounded — but never a
+        // monitored one while armed: a session that dies must stay in the done-evaluation set
+        // (visible as "ended") instead of silently falling out and leaving the Mac armed forever.
+        let dropped = state.sessions.filter {
+            $0.endedAt != nil && !runningIds.contains($0.id)
+                && !(state.mode == .armed && state.isMonitored($0.id))
+        }.map(\.id)
+        if !dropped.isEmpty {
+            let gone = Set(dropped)
+            state.sessions.removeAll { gone.contains($0.id) }
+            for id in gone { state.policies.removeValue(forKey: id) }
+        }
         for r in running { state.merge(discovered: r.id, agent: r.agent, cwd: r.cwd, transcript: r.transcript) }
-        let busy = ProcessProbe.busyCwds()   // cwds with a running tool/server (one pass)
 
         for i in state.sessions.indices {
             let s = state.sessions[i]
-            state.sessions[i].lastSeen = ProcessProbe.mtime(s.transcript) ?? s.lastSeen
-            state.sessions[i].subagentsActive = ProcessProbe.subagentActive(s.transcript, agent: s.agent)
+            guard let scan = scans[s.transcript] else { continue }
+            state.sessions[i].lastSeen = scan.mtime ?? s.lastSeen
+            state.sessions[i].subagentsActive = scan.subagent
             state.sessions[i].toolRunning = busy.contains(s.cwd)
-            if state.sessions[i].summary.isEmpty {
-                state.sessions[i].summary = ProcessProbe.summarize(s.transcript, agent: s.agent)
+            if s.summary.isEmpty, let sum = scan.summary, !sum.isEmpty {
+                state.sessions[i].summary = sum
             }
             // Mark vanished sessions ended once gone from the process list and quiet a while.
             if state.sessions[i].endedAt == nil,
@@ -63,6 +116,9 @@ final class Coordinator: ObservableObject {
                 state.sessions[i].endedAt = Date()
             }
         }
+        // First scan done: drop persisted policies for sessions that no longer exist.
+        if !prunedOnce { prunedOnce = true; state.prunePolicies() }
+
         evaluateDone()
         // Keep the safety cap from firing mid-work: while any monitored session is genuinely
         // active, push the watchdog out. It only fires after a long stretch with nothing happening.
@@ -89,6 +145,16 @@ final class Coordinator: ObservableObject {
         else { PowerManager.releaseDisplayAwake() }
     }
 
+    /// Run one privileged pmset op off the main thread, one at a time — a hung password dialog
+    /// (e.g. unattended, lid closed) must not freeze the app or stack more dialogs behind it.
+    /// Returns nil if another op is already in flight.
+    private func runPrivileged(_ op: @escaping @Sendable () -> Bool) async -> Bool? {
+        guard !privilegedInFlight else { return nil }
+        privilegedInFlight = true
+        defer { privilegedInFlight = false }
+        return await Task.detached { op() }.value
+    }
+
     // MARK: - arming (called AFTER which/when/how is configured)
 
     func arm() {
@@ -96,30 +162,38 @@ final class Coordinator: ObservableObject {
             state.lastStatus = "Pick a 'sleep when' option on a session first"
             return
         }
+        guard !privilegedInFlight else { return }
         let who = state.monitoredSessions.map(\.label).joined(separator: ", ")
+        // Written BEFORE touching pmset so a crash mid-arm still reconciles on next launch.
         StateStore.save(DesiredState(mode: .armed, armedAt: Date(), reason: "monitoring \(who)"))
-        guard PowerManager.arm() else {
-            state.lastStatus = "Couldn't arm (permission denied)"
-            return
+        state.lastStatus = "Arming…"
+        Task {
+            guard await runPrivileged({ PowerManager.arm() }) == true else {
+                // Didn't happen — put the persisted intent back so the next launch doesn't
+                // "reconcile" an arm that never took effect.
+                StateStore.save(DesiredState(mode: .normal, armedAt: nil, reason: "arm-failed"))
+                state.lastStatus = "Couldn't arm (permission denied)"
+                return
+            }
+            state.armedAt = Date()
+            state.mode = .armed
+            state.lastStatus = "Armed — watching \(who)"
+            startWatchdog()
+            schedulePoll()   // slow to 60s while armed
+            syncDisplayAwake()
         }
-        armedAt = Date()
-        state.mode = .armed
-        state.lastStatus = "Armed — watching \(who)"
-        startWatchdog()
-        schedulePoll()   // slow to 60s while armed
-        syncDisplayAwake()
     }
 
     @discardableResult
-    func disarm(_ note: String = "Reverted to normal sleep") -> Bool {
+    func disarm(_ note: String = "Reverted to normal sleep") async -> Bool {
         // The revert needs admin rights. If it didn't actually happen (e.g. the password prompt was
         // dismissed), DON'T claim we're normal — we're still keeping the Mac awake.
-        guard PowerManager.disarm() else {
+        guard await runPrivileged({ PowerManager.disarm() }) == true else {
             state.lastStatus = "Revert needs your password — still awake (Stop again, or install silent mode)"
             return false
         }
         stopWatchdog()
-        armedAt = nil
+        state.armedAt = nil
         PowerManager.releaseDisplayAwake()
         StateStore.save(DesiredState(mode: .normal, armedAt: nil, reason: note))
         state.mode = .normal
@@ -133,14 +207,14 @@ final class Coordinator: ObservableObject {
     /// if pmset was left awake by a crash or another tool.
     func reset() {
         stopWatchdog()
-        armedAt = nil
+        state.armedAt = nil
         state.setAll(.off)
         StateStore.save(DesiredState(mode: .normal, armedAt: nil, reason: "reset"))
-        _ = PowerManager.disarm()
         PowerManager.releaseDisplayAwake()
         state.mode = .normal
         state.lastStatus = "Reset — normal sleep restored (lid sleeps)"
         schedulePoll()
+        Task { _ = await runPrivileged({ PowerManager.disarm() }) }
     }
 
     // MARK: - the done-policy evaluator (WHEN)
@@ -154,40 +228,72 @@ final class Coordinator: ObservableObject {
         // so the Mac stays awake as long as it's in the set (the server / keep-running case).
         let now = Date()
         let allDone = sessions.allSatisfy {
-            DoneRule.isDone($0, policy: state.policy(for: $0.id), armedAt: armedAt, now: now)
+            DoneRule.isDone($0, policy: state.policy(for: $0.id), armedAt: state.armedAt, now: now)
         }
         guard allDone else { return }
         fireAction()
     }
 
     private func fireAction() {
-        // TODO(lid-guard): sleeps even with the lid OPEN. Could add "only sleep if lid closed" later.
-        // All monitored sessions met their criteria → restore normal sleep, then sleep the Mac.
-        // Only actually sleep if the revert succeeded (otherwise disablesleep is still on and the
-        // sleep would be blocked anyway).
-        if disarm("Done — all sessions finished; sleeping") {
-            PowerManager.sleepNow()
+        // All monitored sessions met their criteria → restore normal sleep. Force the actual sleep
+        // only when the lid is closed (the walked-away case this app exists for); lid open means
+        // someone is at the machine, so reverting is enough — don't sleep in their face.
+        // Unknown lid (no clamshell sensor) → treat as closed and sleep.
+        let lidIsClosed = ProcessProbe.lidClosed() ?? true
+        Task {
+            let note = lidIsClosed ? "Done — all sessions finished; sleeping"
+                                   : "Done — all sessions finished (lid open, so staying awake)"
+            // Only sleep if the revert succeeded (otherwise disablesleep is still on and the
+            // sleep would be blocked anyway). On failure the next poll retries; runPrivileged
+            // guarantees only one password dialog can be pending.
+            if await disarm(note), lidIsClosed {
+                PowerManager.sleepNow()
+            }
         }
     }
 
     // MARK: - watchdog (PLAN.md §5, layer 2)
 
     private func startWatchdog() {
-        stopWatchdog()
+        watchdog?.invalidate(); watchdog = nil; state.watchdogDeadline = nil
         guard state.watchdogMinutes > 0 else { return }
         // Don't cap sessions the user pinned to stay awake forever (the server / long-runner case).
         if state.monitoredSessions.contains(where: { state.policy(for: $0.id).kind == .never }) { return }
-        watchdog = Timer.scheduledTimer(withTimeInterval: TimeInterval(state.watchdogMinutes * 60),
-                                        repeats: false) { [weak self] _ in
-            Task { @MainActor in self?.disarm("Watchdog hard-cap reached — reverted") }
+        scheduleWatchdog(after: TimeInterval(state.watchdogMinutes * 60))
+    }
+
+    private func scheduleWatchdog(after seconds: TimeInterval) {
+        watchdog?.invalidate()
+        state.watchdogDeadline = Date().addingTimeInterval(seconds)
+        watchdog = Timer.scheduledTimer(withTimeInterval: seconds, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.watchdogFired() }
         }
     }
 
-    private func stopWatchdog() { watchdog?.invalidate(); watchdog = nil }
+    private func watchdogFired() {
+        Task {
+            if !(await disarm("Watchdog hard-cap reached — reverted")) {
+                // Revert didn't happen (needs a password nobody is there to type). Keep retrying
+                // on a short leash instead of staying armed forever.
+                scheduleWatchdog(after: 300)
+            }
+        }
+    }
+
+    private func stopWatchdog() {
+        watchdog?.invalidate(); watchdog = nil
+        state.watchdogDeadline = nil
+    }
+
+    /// Watchdog setting changed in the UI — re-apply immediately if we're armed.
+    func watchdogChanged() {
+        if state.mode == .armed { startWatchdog() }
+    }
 
     // MARK: - lifecycle
 
-    /// Called on quit / signal: best-effort revert (PLAN.md §5, layer 3).
+    /// Called on quit / signal: best-effort synchronous revert (PLAN.md §5, layer 3) — the app is
+    /// dying, an async hop would never complete.
     func shutdown() {
         if state.mode == .armed { _ = PowerManager.disarm() }
         StateStore.save(DesiredState(mode: .normal, armedAt: nil, reason: "app-quit"))

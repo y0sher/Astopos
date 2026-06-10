@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import ServiceManagement
 
 struct AstoposApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
@@ -15,23 +16,49 @@ struct AstoposApp: App {
     }
 }
 
-/// Menu-bar icon; observes state so it flips on arm/disarm.
+/// "1h 5m" / "12m" / "40s" for compact countdowns.
+func shortDuration(_ seconds: Int) -> String {
+    let s = max(0, seconds)
+    if s >= 3600 { return "\(s / 3600)h \((s % 3600) / 60)m" }
+    if s >= 60 { return "\(s / 60)m" }
+    return "\(s)s"
+}
+
+/// Menu-bar icon; observes state so it flips on arm/disarm. While armed it also shows how many
+/// monitored sessions are still working — a glance answers "how many left" without opening it.
 struct MenuIcon: View {
     @ObservedObject var state: AppState
     var body: some View {
-        Image(systemName: state.mode == .armed ? "bolt.fill" : "moon")
+        if state.mode == .armed {
+            let working = state.monitoredSessions.filter(\.isWorking).count
+            HStack(spacing: 2) {
+                Image(systemName: "bolt.fill")
+                if working > 0 { Text("\(working)") }
+            }
+        } else {
+            Image(systemName: "moon")
+        }
     }
 }
 
 /// Wires the coordinator into the AppKit lifecycle so we revert on quit / signals.
 final class AppDelegate: NSObject, NSApplicationDelegate {
     static weak var coord: Coordinator?
+    private var signalSources: [DispatchSourceSignal] = []
+
     func applicationDidFinishLaunching(_ note: Notification) {
+        // DispatchSourceSignal, not a signal() handler: a handler that touches GCD isn't
+        // async-signal-safe, and dispatching sync to main deadlocks when the signal is delivered
+        // on the main thread (the usual case for Ctrl-C).
         for sig in [SIGINT, SIGTERM] {
-            signal(sig) { _ in
-                DispatchQueue.main.sync { AppDelegate.coord?.shutdown() }
+            signal(sig, SIG_IGN)
+            let src = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+            src.setEventHandler {
+                AppDelegate.coord?.shutdown()
                 exit(0)
             }
+            src.resume()
+            signalSources.append(src)
         }
     }
     func applicationWillTerminate(_ note: Notification) { AppDelegate.coord?.shutdown() }
@@ -41,7 +68,9 @@ struct PanelView: View {
     let coord: Coordinator
     @ObservedObject var state: AppState
     @State private var expandedFolders: Set<String> = []
-    @State private var showSetup = false
+    @State private var showAdvanced = false
+    @State private var confirmReset = false
+    @State private var launchAtLogin = false
 
     private var monitored: [AgentSession] { state.monitoredSessions.sorted { $0.lastSeen > $1.lastSeen } }
 
@@ -58,23 +87,35 @@ struct PanelView: View {
             VStack(alignment: .leading, spacing: 10) {
                 header
                 if state.mode == .armed {
-                    Label("A dark screen is normal — the Mac is awake and your sessions keep running.",
-                          systemImage: "bolt.fill")
-                        .font(.caption2).foregroundStyle(.yellow)
-                        .fixedSize(horizontal: false, vertical: true)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Label("A dark screen is normal — the Mac is awake and your sessions keep running.",
+                              systemImage: "bolt.fill")
+                            .font(.caption2).foregroundStyle(.yellow)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if let deadline = state.watchdogDeadline {
+                            Text("Hard cap: reverts in \(shortDuration(Int(deadline.timeIntervalSinceNow))) if nothing is active.")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
                 }
                 Divider()
                 sessionsSection
                 Divider()
                 controlButtons
                 Divider()
-                setupSection
+                advancedSection
+                Divider()
+                Button("Quit Astopos") { coord.shutdown(); NSApp.terminate(nil) }
             }
             .padding(14)
             .frame(width: 340)
         }
         .frame(maxHeight: 620)
-        .onAppear { AppDelegate.coord = coord }
+        .onAppear {
+            AppDelegate.coord = coord
+            coord.refreshSudoStatus()
+            launchAtLogin = Bundle.main.bundleIdentifier != nil && SMAppService.mainApp.status == .enabled
+        }
     }
 
     // MARK: header
@@ -84,7 +125,9 @@ struct PanelView: View {
                 .foregroundStyle(state.mode == .armed ? .yellow : .secondary)
             VStack(alignment: .leading, spacing: 1) {
                 Text("Astopos").font(.headline)
-                Text(state.lastStatus).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Text(state.lastStatus).font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                    .help(state.lastStatus)
             }
             Spacer()
             Text(state.mode == .armed ? "AWAKE" : "NORMAL")
@@ -139,6 +182,7 @@ struct PanelView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("\(leaf.isEmpty ? cwd : leaf), \(list.count) sessions, \(expanded ? "expanded" : "collapsed")")
         if expanded {
             ForEach(list) { SessionRow(sess: $0, state: state) }
         }
@@ -148,7 +192,7 @@ struct PanelView: View {
     private var controlButtons: some View {
         VStack(spacing: 8) {
             if state.mode == .armed {
-                Button { coord.disarm("Stopped manually") } label: {
+                Button { Task { await coord.disarm("Stopped manually") } } label: {
                     Label("Stop & revert now", systemImage: "stop.fill").frame(maxWidth: .infinity)
                 }.buttonStyle(.borderedProminent).tint(.orange)
             } else {
@@ -177,31 +221,84 @@ struct PanelView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             HStack {
                 Button("Sleep now") { PowerManager.sleepNow() }.frame(maxWidth: .infinity)
-                Button("Reset") { coord.reset() }.frame(maxWidth: .infinity)
+                    .help("Put the Mac to sleep immediately (does not change any settings)")
+                Button {
+                    if confirmReset {
+                        confirmReset = false
+                        coord.reset()
+                    } else {
+                        confirmReset = true
+                        Task { try? await Task.sleep(for: .seconds(3)); confirmReset = false }
+                    }
+                } label: {
+                    Text(confirmReset ? "Really reset?" : "Reset").frame(maxWidth: .infinity)
+                }
+                .tint(confirmReset ? .red : nil)
+                .help("Force normal sleep and clear every monitoring choice")
             }
         }
     }
 
-    // MARK: setup (collapsed)
-    private var setupSection: some View {
-        DisclosureGroup(isExpanded: $showSetup) {
+    // MARK: advanced (collapsed)
+    private var advancedSection: some View {
+        DisclosureGroup(isExpanded: $showAdvanced) {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Tracks Claude & Codex sessions by polling their transcripts — nothing is installed into either tool.")
                     .font(.caption2).foregroundStyle(.secondary)
                 HStack {
-                    Text("Privileged toggles:").font(.caption).foregroundStyle(.secondary)
-                    if state.silentSudoInstalled {
-                        Text("silent").font(.caption).foregroundStyle(.green)
-                        Button("Remove") { if SudoersInstaller.remove() { state.silentSudoInstalled = false } }.font(.caption)
+                    Text("Auto-sleep while away:").font(.caption).foregroundStyle(.secondary)
+                    if state.silentSudoWorks {
+                        Text("on").font(.caption).foregroundStyle(.green)
+                        Button("Turn off") {
+                            if SudoersInstaller.remove() { coord.refreshSudoStatus() }
+                        }.font(.caption)
+                    } else if state.silentSudoInstalled {
+                        Text("needs update").font(.caption).foregroundStyle(.orange)
+                        Button("Update…") {
+                            if SudoersInstaller.install() { coord.refreshSudoStatus() }
+                        }.font(.caption)
                     } else {
-                        Text("prompts").font(.caption)
-                        Button("Make silent…") { if SudoersInstaller.install() { state.silentSudoInstalled = true } }.font(.caption)
+                        Text("off").font(.caption).foregroundStyle(.secondary)
+                        Button("Enable…") {
+                            if SudoersInstaller.install() { coord.refreshSudoStatus() }
+                        }.font(.caption)
                     }
                 }
-                Button("Quit Astopos") { coord.shutdown(); NSApp.terminate(nil) }.padding(.top, 2)
+                Text("Lets Astopos revert and sleep the Mac without a password, so it sleeps itself once your sessions finish — even with the lid closed and you away. Without it, sessions still keep running; the Mac just waits until you reopen the lid. Installs a scoped sudoers rule, locked to the two pmset commands (one admin prompt).")
+                    .font(.caption2).foregroundStyle(.secondary)
+                HStack {
+                    Text("Hard cap:").font(.caption).foregroundStyle(.secondary)
+                    Picker("Hard cap", selection: Binding(
+                        get: { state.watchdogMinutes },
+                        set: { state.watchdogMinutes = $0; coord.watchdogChanged() })) {
+                        Text("Off").tag(0)
+                        Text("30 min").tag(30)
+                        Text("1 h").tag(60)
+                        Text("2 h").tag(120)
+                        Text("4 h").tag(240)
+                        Text("8 h").tag(480)
+                    }
+                    .labelsHidden().fixedSize()
+                }
+                Text("Safety net: while armed, reverts to normal sleep after this long with nothing active.")
+                    .font(.caption2).foregroundStyle(.secondary)
+                if Bundle.main.bundleIdentifier != nil {
+                    Toggle("Launch at login", isOn: Binding(
+                        get: { launchAtLogin },
+                        set: { on in
+                            do {
+                                if on { try SMAppService.mainApp.register() }
+                                else { try SMAppService.mainApp.unregister() }
+                                launchAtLogin = on
+                            } catch {
+                                state.lastStatus = "Launch-at-login change failed: \(error.localizedDescription)"
+                            }
+                        }))
+                        .toggleStyle(.checkbox).font(.caption)
+                }
             }.padding(.top, 4)
         } label: {
-            Text("Setup").font(.caption.bold()).foregroundStyle(.secondary)
+            Text("Advanced").font(.caption.bold()).foregroundStyle(.secondary)
         }
     }
 }
@@ -231,6 +328,7 @@ struct SessionRow: View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Toggle("", isOn: monitorBinding).toggleStyle(.checkbox).labelsHidden()
+                    .accessibilityLabel("Monitor \(sess.label)")
                 AgentBadge(agent: sess.agent)
                 VStack(alignment: .leading, spacing: 0) {
                     Text(sess.label).fontWeight(.medium).lineLimit(1)
@@ -242,6 +340,7 @@ struct SessionRow: View {
                         Image(systemName: "info.circle").foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
+                    .accessibilityLabel("Show full prompt")
                     .popover(isPresented: $showInfo, arrowEdge: .leading) {
                         VStack(alignment: .leading, spacing: 6) {
                             HStack(spacing: 6) {
@@ -262,8 +361,15 @@ struct SessionRow: View {
                     pill("Idle", .idle)
                     pill("Never", .never)
                     if pol.kind == .idle {
-                        Stepper("\(pol.idleMinutes)m", value: idleBinding, in: 1...120)
-                            .font(.caption).fixedSize()
+                        Menu {
+                            ForEach([1, 2, 5, 10, 15, 30, 60, 120], id: \.self) { m in
+                                Button("\(m) min") { state.updatePolicy(sess.id) { $0.idleMinutes = m } }
+                            }
+                        } label: {
+                            Text("\(pol.idleMinutes)m").font(.caption)
+                        }
+                        .fixedSize()
+                        .accessibilityLabel("Idle minutes, currently \(pol.idleMinutes)")
                     }
                 }
                 .padding(.leading, 20)   // align under the title, past the checkbox
@@ -286,6 +392,8 @@ struct SessionRow: View {
                 .clipShape(Capsule())
         }
         .buttonStyle(.plain)
+        .accessibilityLabel("Sleep trigger: \(kind.label)")
+        .accessibilityAddTraits(on ? [.isSelected] : [])
     }
 
     private var stateText: String {
@@ -294,8 +402,21 @@ struct SessionRow: View {
         if sess.toolRunning { return "running" }
         if sess.idleSeconds < 15 { return "working" }
         let s = sess.idleSeconds
-        return s >= 60 ? "idle \(s / 60)m" : "idle \(s)s"
+        let idle = s >= 60 ? "idle \(s / 60)m" : "idle \(s)s"
+        if let extra = countdown { return "\(idle) · \(extra)" }
+        return idle
     }
+
+    /// While armed: how close this idle session is to meeting its own trigger.
+    private var countdown: String? {
+        guard state.mode == .armed, monitored, sess.endedAt == nil else { return nil }
+        if pol.kind == .never { return "pinned awake" }
+        guard let quiet = pol.quietSeconds, let armed = state.armedAt else { return nil }
+        guard sess.lastSeen > armed else { return "waiting for activity" }
+        let remain = quiet - sess.idleSeconds
+        return remain > 0 ? "done in \(shortDuration(remain))" : "done ✓"
+    }
+
     // Show the folder for context only when the title is a prompt summary (else it'd repeat).
     private var subtitle: String {
         sess.summary.isEmpty ? stateText : "\(sess.folderName) · \(stateText)"
@@ -305,8 +426,5 @@ struct SessionRow: View {
     private var monitorBinding: Binding<Bool> {
         Binding(get: { pol.kind != .off },
                 set: { on in state.updatePolicy(sess.id) { $0.kind = on ? ($0.kind == .off ? .idle : $0.kind) : .off } })
-    }
-    private var idleBinding: Binding<Int> {
-        Binding(get: { pol.idleMinutes }, set: { v in state.updatePolicy(sess.id) { $0.idleMinutes = v } })
     }
 }

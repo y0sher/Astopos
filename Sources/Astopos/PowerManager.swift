@@ -4,8 +4,9 @@ import IOKit.pwr_mgt
 /// Runs the privileged pmset toggles and the unprivileged sleep commands.
 ///
 /// Strategy (matches PLAN.md §2):
-///   1. try `sudo -n pmset ...`  (silent — works once the Tier-2 sudoers file is installed,
-///      or while macOS still has a cached auth)
+///   1. try `sudo -n /usr/bin/pmset ...` — invoked directly (no shell wrapper) so it matches the
+///      exact command line the Tier-2 sudoers drop-in allowlists and runs silently once installed
+///      (or while macOS still has a cached auth)
 ///   2. on failure, fall back to an osascript admin-privileges dialog (Tier 1)
 ///
 /// Sleep / display-off need no privileges at all.
@@ -13,28 +14,30 @@ enum PowerManager {
 
     // MARK: - privileged toggles
 
-    /// Keep the Mac awake with the lid closed (battery profile, per the user's commands).
+    /// The exact pmset arguments for arming/disarming. `-a` covers every power profile — battery
+    /// AND charger; `-b` alone would silently do nothing when the Mac is plugged in. We
+    /// deliberately don't touch the user's `sleep` timer: `disablesleep 1` already blocks all
+    /// sleep (including clamshell), and overwriting `sleep` clobbers a setting we'd then have to
+    /// restore. These must stay in lockstep with SudoersInstaller.content.
+    static func pmsetArgs(arm: Bool) -> [String] { ["-a", "disablesleep", arm ? "1" : "0"] }
+
+    /// Keep the Mac awake with the lid closed.
     @discardableResult
-    static func arm() -> Bool {
-        privileged("/usr/bin/pmset -b disablesleep 1; /usr/bin/pmset -b sleep 0")
-    }
+    static func arm() -> Bool { privileged(pmsetArgs(arm: true)) }
 
     /// Restore normal sleep behaviour.
     @discardableResult
-    static func disarm() -> Bool {
-        privileged("/usr/bin/pmset -b disablesleep 0; /usr/bin/pmset -b sleep 5")
-    }
+    static func disarm() -> Bool { privileged(pmsetArgs(arm: false)) }
 
     // MARK: - unprivileged actions
 
-    /// Sleep the whole machine immediately — no sudo needed. Sends the Apple Event in-process
-    /// (no `osascript` spawn). This is the no-root path; IOPMSleepSystem would require root.
+    /// Sleep the whole machine immediately. `pmset sleepnow` needs no privileges and no TCC
+    /// consent. The AppleScript fallback needs the Automation permission (a prompt the user can't
+    /// answer with the lid closed), so it's last resort only.
     static func sleepNow() {
+        if runOK("/usr/bin/pmset", ["sleepnow"]) { return }
         var err: NSDictionary?
         NSAppleScript(source: "tell application \"System Events\" to sleep")?.executeAndReturnError(&err)
-        if err != nil {
-            run("/usr/bin/osascript", ["-e", "tell application \"System Events\" to sleep"])
-        }
     }
 
     /// Turn the display off immediately — no sudo needed.
@@ -72,22 +75,21 @@ enum PowerManager {
 
     // MARK: - introspection
 
-    /// True if the system currently has disablesleep set (battery profile).
+    /// True if the system currently has disablesleep set. `pmset -g` reports the live state as a
+    /// "SleepDisabled 1" line (it isn't part of any profile in `pmset -g custom`).
     static func isDisableSleepActive() -> Bool {
-        guard let out = capture("/usr/bin/pmset", ["-g", "custom"]) else { return false }
-        // crude but sufficient: look at the Battery Power block for "sleep 0"/"disablesleep"
-        return out.contains("disablesleep 1") || out.range(of: #"\n sleep\s+0"#, options: .regularExpression) != nil
+        guard let out = capture("/usr/bin/pmset", ["-g"]) else { return false }
+        return out.range(of: #"SleepDisabled\s+1"#, options: .regularExpression) != nil
     }
 
     // MARK: - implementation
 
-    /// Try silent sudo first, then prompt via osascript.
-    private static func privileged(_ shell: String) -> Bool {
-        if runOK("/usr/bin/sudo", ["-n", "/bin/sh", "-c", shell]) { return true }
-        // Fallback: native admin dialog. Escape double quotes for AppleScript string.
-        let escaped = shell.replacingOccurrences(of: "\\", with: "\\\\")
-                           .replacingOccurrences(of: "\"", with: "\\\"")
-        let script = "do shell script \"\(escaped)\" with administrator privileges"
+    /// Try silent sudo first, then prompt via osascript. The sudo invocation runs pmset directly:
+    /// wrapping it in `sh -c` would make sudo check /bin/sh against the sudoers allowlist (which
+    /// only permits pmset) and always fail.
+    private static func privileged(_ args: [String]) -> Bool {
+        if runOK("/usr/bin/sudo", ["-n", "/usr/bin/pmset"] + args) { return true }
+        let script = "do shell script \"/usr/bin/pmset \(args.joined(separator: " "))\" with administrator privileges"
         return runOK("/usr/bin/osascript", ["-e", script])
     }
 
@@ -98,6 +100,7 @@ enum PowerManager {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: path)
         p.arguments = args
+        p.standardOutput = Pipe(); p.standardError = Pipe()
         do {
             try p.run()
             p.waitUntilExit()
@@ -113,11 +116,11 @@ enum PowerManager {
         p.arguments = args
         let pipe = Pipe()
         p.standardOutput = pipe
+        p.standardError = Pipe()
         do {
             try p.run()
             p.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            return String(data: data, encoding: .utf8)
+            return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)
         } catch {
             return nil
         }

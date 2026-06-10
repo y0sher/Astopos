@@ -1,5 +1,5 @@
 APP = Astopos
-VERSION = 0.0.1
+VERSION = 0.2.0
 BUNDLE = $(APP).app
 BIN = .build/release/$(APP)
 DMG = $(APP)-$(VERSION).dmg

@@ -201,9 +201,14 @@ enum ProcessProbe {
     }
 
     private static func pids(named name: String) -> [Int32] {
+        // Exact process-name match first (the native claude/codex binaries). The fallback covers
+        // wrapper installs (`node /path/claude`) but is anchored so the name must be a whole word
+        // at a path boundary — a bare `pgrep -f claude` would also match MCP servers,
+        // `tail -f ~/.claude/...`, editors with .claude paths in their args, etc., creating
+        // phantom sessions.
         let primary = capture("/usr/bin/pgrep", ["-x", name]) ?? ""
         let text = primary.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? (capture("/usr/bin/pgrep", ["-f", name]) ?? "") : primary
+            ? (capture("/usr/bin/pgrep", ["-f", "(^|/)\(name)($| )"]) ?? "") : primary
         return text.split(whereSeparator: \.isNewline).compactMap { Int32($0.trimmingCharacters(in: .whitespaces)) }
     }
 

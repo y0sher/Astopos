@@ -20,9 +20,9 @@ A tiny menu-bar app for the moment your agent is mid-flight and you have to get 
 
 ## What it does
 
-- **Keeps the Mac awake with the lid closed** (`pmset disablesleep`) so `claude` / `codex` keep running.
+- **Keeps the Mac awake with the lid closed** (`pmset -a disablesleep 1` — covers battery *and* charger) so `claude` / `codex` keep running. Your sleep-timer settings are left untouched.
 - **Turns the screen off when you close the lid** and **back on when you open it** — saves the display's battery while the work continues. (Automatic; not a setting.)
-- **Watches your sessions** and, once **every** one you're monitoring has finished, **restores normal sleep and sleeps the Mac**.
+- **Watches your sessions** and, once **every** one you're monitoring has finished, **restores normal sleep and sleeps the Mac** — but only forces the sleep if the lid is actually closed. Lid open means you're there, so it just quietly reverts.
 - **No setup in Claude or Codex.** It figures out what's happening purely by reading their session transcripts — nothing is installed into either tool, no config, no network port.
 
 ## How it tracks sessions (no hooks, no config)
@@ -43,7 +43,8 @@ From those + the process list it knows each session's **project folder**, a **na
    - **Never** — keep awake until you stop it (for a server / long-runner you want to reach).
    - **Off** — don't monitor.
 3. Hit **Arm keep-awake** (one password prompt). Close the lid and go.
-4. When every monitored session is done, Astopos reverts sleep and sleeps the Mac. Or hit **Stop & revert** / **Reset** anytime.
+   > For unattended runs, install **silent mode** first (one-time, offered next to the Arm button): the *final revert* also needs admin rights, and without silent mode it would wait on a password prompt nobody is there to answer.
+4. When every monitored session is done, Astopos reverts sleep and — if the lid is closed — sleeps the Mac. Or hit **Stop & revert** / **Reset** anytime.
 
 Only work that happens **after** you arm counts — arming a session that's already idle won't sleep immediately.
 
@@ -61,12 +62,12 @@ make app             # bundle Astopos.app (menu-bar only) — then drag to /Appl
 
 ## Safety nets
 
-- **Watchdog** — a hard cap (default 2h) reverts keep-awake no matter what.
+- **Watchdog** — a hard cap (default 2h, configurable in Setup) reverts keep-awake no matter what; if the revert can't run it retries every 5 minutes.
 - **Reset** — one button forces normal sleep (lid closes → sleeps), even if something else left the Mac awake.
 - **Self-healing** — reverts on quit, and reconciles on next launch if it ever crashed while armed.
 
 ## Heads-up
 
-- The privileged toggle (`pmset disablesleep`) needs an admin password each arm/revert. Install **silent mode** (Setup → scoped `sudoers` entry) for hands-off, prompt-free operation.
+- The privileged toggle (`pmset -a disablesleep`) needs an admin password each arm/revert. Install **silent mode** (Setup → scoped `sudoers` entry, locked to the two exact pmset commands) for hands-off, prompt-free operation — effectively required for unattended auto-sleep. If you installed silent mode with an older Astopos, Setup will show it as **stale**; hit Update once.
 - **Amphetamine** plays nicely alongside Astopos — they do different jobs: Amphetamine keeps the *display* awake/unlocked while you work with the lid open; Astopos keeps the *system* awake with the lid closed and sleeps it when you're done. Just leave Amphetamine's **"Allow when display is closed"** option **off** — that one fights Astopos for the lid-closed setting. Everything else can stay on.
 - A dark/locked screen while armed is normal — the Mac is still awake and your sessions keep running. The password on reopen is just macOS's screen lock (tied to the display turning off), not a wake-from-sleep.

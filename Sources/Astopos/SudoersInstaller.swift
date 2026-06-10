@@ -1,17 +1,33 @@
 import Foundation
 
 /// Tier-2 (opt-in): install a scoped /etc/sudoers.d/astopos drop-in so the pmset toggles run
-/// silently. Locked to the exact binary + flags. Validated with `visudo -cf` before install.
-/// (PLAN.md §2.) Requires one admin prompt to install/remove.
+/// silently. Locked to the two exact command lines PowerManager runs — no wildcards, so nothing
+/// else can ride along. Validated with `visudo -cf` before install. (PLAN.md §2.)
+/// Requires one admin prompt to install/remove.
 enum SudoersInstaller {
     private static let path = "/etc/sudoers.d/astopos"
 
     static var isInstalled: Bool { FileManager.default.fileExists(atPath: path) }
 
-    private static func content(user: String) -> String {
-        """
-        # Installed by Astopos. Allows ONLY the keep-awake pmset toggles, no password.
-        \(user) ALL=(root) NOPASSWD: /usr/bin/pmset -b disablesleep *, /usr/bin/pmset -b sleep *
+    /// True if silent sudo actually authorizes the command we run. `sudo -n -l <command>` checks
+    /// the rule without executing anything; a drop-in left over from an older Astopos (different
+    /// pmset flags) exists on disk but fails this — surfacing "stale, reinstall" in the UI instead
+    /// of a password dialog popping on a closed-lid Mac later.
+    static func works() -> Bool {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
+        p.arguments = ["-n", "-l", "/usr/bin/pmset"] + PowerManager.pmsetArgs(arm: true)
+        p.standardOutput = Pipe(); p.standardError = Pipe()
+        do { try p.run(); p.waitUntilExit(); return p.terminationStatus == 0 }
+        catch { return false }
+    }
+
+    static func content(user: String) -> String {
+        let on = (["/usr/bin/pmset"] + PowerManager.pmsetArgs(arm: true)).joined(separator: " ")
+        let off = (["/usr/bin/pmset"] + PowerManager.pmsetArgs(arm: false)).joined(separator: " ")
+        return """
+        # Installed by Astopos. Allows ONLY the exact keep-awake pmset toggles, no password.
+        \(user) ALL=(root) NOPASSWD: \(on), \(off)
         """
     }
 

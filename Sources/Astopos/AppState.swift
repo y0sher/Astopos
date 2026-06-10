@@ -81,24 +81,67 @@ struct SessionPolicy: Codable, Equatable {
 }
 
 /// Single source of truth for the UI. Lives on the main actor.
+/// Policies and the two toggles persist via UserDefaults so a relaunch (crash, update) doesn't
+/// lose the user's choices — still-running sessions are re-discovered with the same ids.
 @MainActor
 final class AppState: ObservableObject {
     @Published var mode: PowerMode = .normal
     @Published var sessions: [AgentSession] = []
 
+    /// When we armed; only work finishing AFTER this counts as "done". Published for the UI's
+    /// per-session countdowns.
+    @Published var armedAt: Date?
+
+    /// When the watchdog hard-cap will fire (nil = not running). Display only.
+    @Published var watchdogDeadline: Date?
+
     // WHICH is derived from each session's trigger: monitored ⇔ policy.kind != .off.
-    @Published var policies: [String: SessionPolicy] = [:]
+    @Published var policies: [String: SessionPolicy] = [:] { didSet { savePolicies() } }
 
     @Published var silentSudoInstalled: Bool = false
+    /// File present AND its rule actually matches the command we run (stale installs fail this).
+    @Published var silentSudoWorks: Bool = false
 
     /// Optional: while armed, hold the screen awake (no auto-lock) instead of letting it turn off.
     /// Mainly affects the lid-open case; with the lid shut the panel is off by hardware regardless.
-    @Published var keepScreenAwake: Bool = false
+    @Published var keepScreenAwake: Bool = false {
+        didSet { UserDefaults.standard.set(keepScreenAwake, forKey: Keys.keepScreenAwake) }
+    }
 
     /// Hard cap: revert no matter what after this many minutes (0 = disabled).
-    @Published var watchdogMinutes: Int = 120
+    @Published var watchdogMinutes: Int = 120 {
+        didSet { UserDefaults.standard.set(watchdogMinutes, forKey: Keys.watchdogMinutes) }
+    }
 
     @Published var lastStatus: String = "Normal"
+
+    private enum Keys {
+        static let policies = "policies"
+        static let keepScreenAwake = "keepScreenAwake"
+        static let watchdogMinutes = "watchdogMinutes"
+    }
+
+    init() {
+        keepScreenAwake = UserDefaults.standard.bool(forKey: Keys.keepScreenAwake)
+        watchdogMinutes = UserDefaults.standard.object(forKey: Keys.watchdogMinutes) as? Int ?? 120
+        if let data = UserDefaults.standard.data(forKey: Keys.policies),
+           let saved = try? JSONDecoder().decode([String: SessionPolicy].self, from: data) {
+            policies = saved
+        }
+    }
+
+    private func savePolicies() {
+        if let data = try? JSONEncoder().encode(policies) {
+            UserDefaults.standard.set(data, forKey: Keys.policies)
+        }
+    }
+
+    /// Drop policies whose session no longer exists (called once discovery has run, and as ended
+    /// sessions are removed) so the persisted dict stays bounded.
+    func prunePolicies() {
+        let live = Set(sessions.map(\.id))
+        for id in policies.keys where !live.contains(id) { policies.removeValue(forKey: id) }
+    }
 
     func isMonitored(_ id: String) -> Bool { policy(for: id).isMonitored }
     var monitoredSessions: [AgentSession] { sessions.filter { isMonitored($0.id) } }
