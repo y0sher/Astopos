@@ -87,6 +87,9 @@ struct PanelView: View {
 
     private var monitored: [AgentSession] { state.monitoredSessions.sorted { $0.lastSeen > $1.lastSeen } }
 
+    /// Agent badges are pure noise when only one tool is in use — show them only when both are.
+    private var multiAgent: Bool { Set(state.sessions.map(\.agent)).count > 1 }
+
     /// Un-monitored sessions grouped by project folder, most-recently-active folder first.
     private var otherFolders: [(cwd: String, sessions: [AgentSession])] {
         let others = state.sessions.filter { !state.isMonitored($0.id) }
@@ -164,6 +167,18 @@ struct PanelView: View {
         return "\(state.lastStatus) · \(shortDuration(age)) ago"
     }
 
+    /// One consolidated headline while armed (live summary), instead of the static "Armed —
+    /// monitoring x, y, z" wall. Transient messages (errors, done-notes) still win.
+    private var headerStatus: String {
+        if state.mode == .armed, state.lastStatus.hasPrefix("Armed") {
+            if state.allMonitoredDone { return "All sessions done — sleeps once the lid is closed" }
+            let m = state.monitoredSessions
+            let working = m.filter(\.isWorking).count
+            return "Monitoring \(m.count) session\(m.count == 1 ? "" : "s") · \(working) working · sleeps when all finish"
+        }
+        return agedStatus
+    }
+
     // MARK: header
     private var header: some View {
         HStack {
@@ -171,9 +186,9 @@ struct PanelView: View {
                 .foregroundStyle(state.mode == .armed ? .yellow : .secondary)
             VStack(alignment: .leading, spacing: 1) {
                 Text("Astopos").font(.headline)
-                Text(agedStatus).font(.caption).foregroundStyle(.secondary)
+                Text(headerStatus).font(.caption).foregroundStyle(.secondary)
                     .lineLimit(2).fixedSize(horizontal: false, vertical: true)
-                    .help(agedStatus)
+                    .help(headerStatus)
             }
             Spacer()
             Text(state.mode == .armed ? "AWAKE" : "NORMAL")
@@ -197,7 +212,8 @@ struct PanelView: View {
                                             : "Nothing monitored yet — open a folder below to pick a session")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            ForEach(monitored) { SessionRow(sess: $0, state: state) }
+            // Monitored rows live outside their folder, so they keep the folder in the subtitle.
+            ForEach(monitored) { SessionRow(sess: $0, state: state, showFolder: true, showBadge: multiAgent) }
 
             ForEach(otherFolders, id: \.cwd) { folderGroup($0.cwd, $0.sessions) }
         }
@@ -216,8 +232,10 @@ struct PanelView: View {
                 Image(systemName: "folder.fill").foregroundStyle(.secondary)
                 Text(leaf.isEmpty ? cwd : leaf).fontWeight(.medium).lineLimit(1)
                 Text("· \(list.count)").foregroundStyle(.secondary)
-                if agents.contains(.claude) { AgentBadge(agent: .claude) }
-                if agents.contains(.codex) { AgentBadge(agent: .codex) }
+                if multiAgent {
+                    if agents.contains(.claude) { AgentBadge(agent: .claude) }
+                    if agents.contains(.codex) { AgentBadge(agent: .codex) }
+                }
                 Spacer()
                 Image(systemName: expanded ? "chevron.down" : "chevron.right").foregroundStyle(.secondary)
             }
@@ -230,7 +248,8 @@ struct PanelView: View {
         .buttonStyle(.plain)
         .accessibilityLabel("\(leaf.isEmpty ? cwd : leaf), \(list.count) sessions, \(expanded ? "expanded" : "collapsed")")
         if expanded {
-            ForEach(list) { SessionRow(sess: $0, state: state) }
+            // Inside their own folder group, repeating the folder name per row is pure noise.
+            ForEach(list) { SessionRow(sess: $0, state: state, showFolder: false, showBadge: multiAgent) }
         }
     }
 
@@ -253,9 +272,9 @@ struct PanelView: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
-            // Network reminder — shown while armed (when it matters most) and pre-arm once a
-            // session is picked.
-            if state.mode == .armed || state.hasSelection {
+            // Network reminder — pre-arm only: tethering is actionable BEFORE you leave; once
+            // armed it's too late to act on and just trains banner-blindness.
+            if state.mode == .normal && state.hasSelection {
                 Label("On the move? Tether to your phone's hotspot — if the network drops, a session can stall.",
                       systemImage: "wifi")
                     .font(.caption2).foregroundStyle(.orange)
@@ -375,20 +394,38 @@ struct AgentBadge: View {
     }
 }
 
-/// One compact session row: agent badge, status dot, live activity, trigger picker, per-session guard.
+/// One compact session row: status dot, live activity, trigger picker, per-session guard.
+/// `showFolder` / `showBadge` keep subtitles deduplicated by context (no folder name inside its
+/// own group; no agent badge when only one tool is in use).
 struct SessionRow: View {
     let sess: AgentSession
     @ObservedObject var state: AppState
+    var showFolder: Bool = true
+    var showBadge: Bool = true
     @State private var showInfo = false
     private var pol: SessionPolicy { state.policy(for: sess.id) }
     private var monitored: Bool { pol.isMonitored }
+
+    /// Recognition over recall: state as color, text reserved for detail.
+    /// Green = working · gray = idle · blue = met its trigger · faded = ended.
+    private var dotColor: Color {
+        if sess.endedAt != nil { return .gray.opacity(0.4) }
+        if doneNow { return .blue }
+        return sess.isWorking ? .green : .gray
+    }
+    private var doneNow: Bool {
+        state.mode == .armed && monitored
+            && DoneRule.isDone(sess, policy: pol, armedAt: state.armedAt, now: Date())
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 6) {
                 Toggle("", isOn: monitorBinding).toggleStyle(.checkbox).labelsHidden()
                     .accessibilityLabel("Monitor \(sess.label)")
-                AgentBadge(agent: sess.agent)
+                Circle().fill(dotColor).frame(width: 7, height: 7)
+                    .accessibilityLabel("Status: \(stateText)")
+                if showBadge { AgentBadge(agent: sess.agent) }
                 VStack(alignment: .leading, spacing: 0) {
                     Text(sess.label).fontWeight(.medium).lineLimit(1)
                     Text(subtitle).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
@@ -420,13 +457,24 @@ struct SessionRow: View {
                     pill("Idle", .idle)
                     pill("Never", .never)
                     if pol.kind == .idle {
+                        // Styled as a VALUE control (stroked, with chevron) — a filled capsule
+                        // here reads as a second selected pill in the radio group.
                         Menu {
                             ForEach([1, 2, 5, 10, 15, 30, 60, 120], id: \.self) { m in
                                 Button("\(m) min") { state.updatePolicy(sess.id) { $0.idleMinutes = m } }
                             }
                         } label: {
-                            Text("\(pol.idleMinutes)m").font(.caption)
+                            HStack(spacing: 3) {
+                                Text("\(pol.idleMinutes)m")
+                                Image(systemName: "chevron.up.chevron.down").font(.system(size: 7))
+                            }
+                            .font(.caption)
+                            .padding(.horizontal, 8).padding(.vertical, 4)
+                            .overlay(Capsule().strokeBorder(Color.secondary.opacity(0.5), lineWidth: 1))
                         }
+                        .menuStyle(.button)
+                        .buttonStyle(.plain)
+                        .menuIndicator(.hidden)
                         .fixedSize()
                         .accessibilityLabel("Idle minutes, currently \(pol.idleMinutes)")
                     }
@@ -442,8 +490,10 @@ struct SessionRow: View {
             }
         }
         .padding(7)
-        .background(monitored ? Color.green.opacity(0.08) : Color.clear)
+        .background(monitored ? Color.green.opacity(0.12) : Color.clear)
         .clipShape(RoundedRectangle(cornerRadius: 7))
+        .overlay(RoundedRectangle(cornerRadius: 7)
+            .strokeBorder(Color.green.opacity(monitored ? 0.35 : 0), lineWidth: 1))
     }
 
     /// A capsule "radio" pill; the selected trigger is filled with the accent color.
@@ -487,9 +537,10 @@ struct SessionRow: View {
         return remain > 0 ? "done in \(shortDuration(remain))" : "done ✓"
     }
 
-    // Show the folder for context only when the title is a prompt summary (else it'd repeat).
+    // Folder shown only where the row lacks folder context (the Monitored section) and the title
+    // is a prompt summary (else it'd repeat the title).
     private var subtitle: String {
-        sess.summary.isEmpty ? stateText : "\(sess.folderName) · \(stateText)"
+        (showFolder && !sess.summary.isEmpty) ? "\(sess.folderName) · \(stateText)" : stateText
     }
 
     // Checkbox: on → monitor (default to Idle if it was Off), off → don't monitor.
