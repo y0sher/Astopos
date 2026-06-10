@@ -64,6 +64,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ note: Notification) { AppDelegate.coord?.shutdown() }
 }
 
+/// Reports the natural height of the session list so the scroll area can size to content.
+private struct SessionsHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
 struct PanelView: View {
     let coord: Coordinator
     @ObservedObject var state: AppState
@@ -71,6 +77,7 @@ struct PanelView: View {
     @State private var showAdvanced = false
     @State private var confirmReset = false
     @State private var launchAtLogin = false
+    @State private var sessionsHeight: CGFloat = 0
 
     private var monitored: [AgentSession] { state.monitoredSessions.sorted { $0.lastSeen > $1.lastSeen } }
 
@@ -104,13 +111,19 @@ struct PanelView: View {
             }
             .padding(.horizontal, 14).padding(.top, 14).padding(.bottom, 10)
             Divider()
+            // The session list is the panel's most important area: it gets its full natural
+            // height (measured via preference) and only becomes scrollable past the cap.
             ScrollView {
                 VStack(alignment: .leading, spacing: 6) {
                     sessionsSection
                 }
                 .padding(.horizontal, 14).padding(.vertical, 10)
+                .background(GeometryReader { g in
+                    Color.clear.preference(key: SessionsHeightKey.self, value: g.size.height)
+                })
             }
-            .frame(maxHeight: 330)
+            .onPreferenceChange(SessionsHeightKey.self) { sessionsHeight = $0 }
+            .frame(height: min(max(sessionsHeight, 44), 380))
             Divider()
             VStack(alignment: .leading, spacing: 10) {
                 controlButtons
@@ -231,6 +244,8 @@ struct PanelView: View {
                      ? "Stays awake (screen off when lid shut). Sleeps once every monitored session finishes."
                      : "Nothing picked — Arm monitors your most recent session (sleeps when it stops).")
                     .font(.caption2).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
             // Network reminder — shown while armed (when it matters most) and pre-arm once a
             // session is picked.
@@ -238,6 +253,7 @@ struct PanelView: View {
                 Label("On the move? Tether to your phone's hotspot — if the network drops, a session can stall.",
                       systemImage: "wifi")
                     .font(.caption2).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
             Toggle("Keep screen on while armed (no auto-lock)", isOn: Binding(
