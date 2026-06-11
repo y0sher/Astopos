@@ -9,14 +9,22 @@ enum SudoersInstaller {
 
     static var isInstalled: Bool { FileManager.default.fileExists(atPath: path) }
 
-    /// True if silent sudo actually authorizes the command we run. `sudo -n -l <command>` checks
+    /// True if silent sudo actually authorizes the commands we run. `sudo -n -l <command>` checks
     /// the rule without executing anything; a drop-in left over from an older Astopos (different
     /// pmset flags) exists on disk but fails this — surfacing "stale, reinstall" in the UI instead
     /// of a password dialog popping on a closed-lid Mac later.
     static func works() -> Bool {
+        sudoCanRun(arm: true) && sudoCanRun(arm: false)
+    }
+
+    static func sudoCheckArguments(arm: Bool) -> [String] {
+        ["-n", "-l", "/usr/bin/pmset"] + PowerManager.pmsetArgs(arm: arm)
+    }
+
+    private static func sudoCanRun(arm: Bool) -> Bool {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
-        p.arguments = ["-n", "-l", "/usr/bin/pmset"] + PowerManager.pmsetArgs(arm: true)
+        p.arguments = sudoCheckArguments(arm: arm)
         p.standardOutput = Pipe(); p.standardError = Pipe()
         do { try p.run(); p.waitUntilExit(); return p.terminationStatus == 0 }
         catch { return false }
@@ -31,23 +39,36 @@ enum SudoersInstaller {
         """
     }
 
-    /// Returns true on success. Writes to a temp file, validates with visudo, then installs — all
-    /// inside one privileged osascript invocation so the user authenticates once.
+    /// Returns true on success. Creates, validates, and installs a root-owned temp file under
+    /// /etc/sudoers.d in one privileged shell, so a user-writable temp path cannot be swapped between
+    /// validation and install.
     @discardableResult
     static func install() -> Bool {
-        let user = NSUserName()
-        let tmp = NSTemporaryDirectory() + "astopos.sudoers"
-        try? content(user: user).write(toFile: tmp, atomically: true, encoding: .utf8)
-        let shell = """
-        /usr/sbin/visudo -cf '\(tmp)' && \
-        /usr/bin/install -m 0440 -o root -g wheel '\(tmp)' '\(path)' && \
-        /bin/rm -f '\(tmp)'
-        """
-        return runPrivileged(shell)
+        runPrivileged(installShell(user: NSUserName()))
     }
 
     @discardableResult
-    static func remove() -> Bool { runPrivileged("/bin/rm -f '\(path)'") }
+    static func remove() -> Bool { runPrivileged("/bin/rm -f \(shellQuote(path))") }
+
+    static func installShell(user: String, id: UUID = UUID()) -> String {
+        let tmp = "/etc/sudoers.d/.astopos.\(id.uuidString).tmp"
+        let encoded = Data(content(user: user).utf8).base64EncodedString()
+        return [
+            "set -e",
+            "tmp=\(shellQuote(tmp))",
+            "trap '/bin/rm -f \"$tmp\"' EXIT",
+            "/usr/bin/install -m 0600 -o root -g wheel /dev/null \"$tmp\"",
+            "/usr/bin/printf %s \(shellQuote(encoded)) | /usr/bin/base64 -D > \"$tmp\"",
+            "/usr/sbin/visudo -cf \"$tmp\"",
+            "/bin/chmod 0440 \"$tmp\"",
+            "/bin/mv -f \"$tmp\" \(shellQuote(path))",
+            "trap - EXIT"
+        ].joined(separator: "; ")
+    }
+
+    static func shellQuote(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
+    }
 
     private static func runPrivileged(_ shell: String) -> Bool {
         let escaped = shell.replacingOccurrences(of: "\\", with: "\\\\")

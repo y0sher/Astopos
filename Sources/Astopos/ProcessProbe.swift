@@ -134,7 +134,7 @@ enum ProcessProbe {
 
     // MARK: - background-process (server / running tool) detection
 
-    /// Child-process probe, one pass for the whole poll. Children are split into two signals:
+    /// Process probe, one pass for the whole poll. Work is split into two signals:
     ///   • busy        — a real child (tool executing / server it launched) is alive
     ///   • agentActive — claude is holding its own `caffeinate -i -t 300`, which it keeps alive
     ///     the whole time it's working a turn. This catches long generation stretches (extended
@@ -142,11 +142,28 @@ enum ProcessProbe {
     ///     state the transcript alone can't distinguish from "stopped".
     static func busyState() -> (busy: Set<String>, agentActive: Set<String>) {
         var busy = Set<String>(), agent = Set<String>()
-        for pid in pids(named: "claude") + pids(named: "codex") {
-            let kids = childKinds(pid)
-            guard kids.real || kids.caffeinate, let c = cwdOf(pid) else { continue }
+        let agentPids = pids(named: "claude") + pids(named: "codex")
+        let rows = processRows()
+        let childrenByParent = Dictionary(grouping: rows, by: \.ppid)
+        let commandByPid = Dictionary(rows.map { ($0.pid, $0.command) }, uniquingKeysWith: { first, _ in first })
+        var excludedPids = Set(agentPids)
+        var watchedCwds = Set<String>()
+
+        for pid in agentPids {
+            guard let c = cwdOf(pid) else { continue }
+            watchedCwds.insert(c)
+            let descendants = descendants(of: pid, in: childrenByParent)
+            excludedPids.formUnion(descendants.map(\.pid))
+            let kids = childKinds(in: descendants)
             if kids.real { busy.insert(c) }
             if kids.caffeinate { agent.insert(c) }
+        }
+
+        if !watchedCwds.isEmpty {
+            let cwdProcs = cwdProcesses().map {
+                CwdProcess(pid: $0.pid, command: commandByPid[$0.pid] ?? $0.command, cwd: $0.cwd)
+            }
+            busy.formUnion(backgroundCwds(from: cwdProcs, watchedCwds: watchedCwds, excludedPids: excludedPids))
         }
         return (busy, agent)
     }
@@ -274,17 +291,120 @@ enum ProcessProbe {
         return out.split(whereSeparator: \.isNewline).first(where: { $0.hasPrefix("n") }).map { String($0.dropFirst()) }
     }
 
-    /// Classify a process's children: real work (tool/server) vs claude's own caffeinate helper.
-    /// (`pgrep -l` lists "pid name".)
-    private static func childKinds(_ pid: Int32) -> (real: Bool, caffeinate: Bool) {
-        guard let out = capture("/usr/bin/pgrep", ["-l", "-P", "\(pid)"]) else { return (false, false) }
+    struct ProcessRow: Equatable {
+        let pid: Int32
+        let ppid: Int32
+        let command: String
+    }
+
+    struct CwdProcess: Equatable {
+        let pid: Int32
+        let command: String
+        let cwd: String
+    }
+
+    static func parseProcessRows(_ text: String) -> [ProcessRow] {
+        text.split(whereSeparator: \.isNewline).compactMap { line in
+            let parts = line.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
+            guard parts.count == 3, let pid = Int32(parts[0]), let ppid = Int32(parts[1]) else {
+                return nil
+            }
+            return ProcessRow(pid: pid, ppid: ppid, command: String(parts[2]))
+        }
+    }
+
+    private static func processRows() -> [ProcessRow] {
+        guard let out = capture("/bin/ps", ["-axo", "pid=,ppid=,comm="]) else { return [] }
+        return parseProcessRows(out)
+    }
+
+    static func descendants(of pid: Int32, in childrenByParent: [Int32: [ProcessRow]]) -> [ProcessRow] {
+        var out: [ProcessRow] = []
+        var stack = childrenByParent[pid] ?? []
+        var seen = Set<Int32>()
+        while let row = stack.popLast() {
+            guard seen.insert(row.pid).inserted else { continue }
+            out.append(row)
+            stack.append(contentsOf: childrenByParent[row.pid] ?? [])
+        }
+        return out
+    }
+
+    /// Classify descendant processes: real work (tool/server) vs claude's own caffeinate helper.
+    static func childKinds(in rows: [ProcessRow]) -> (real: Bool, caffeinate: Bool) {
         var real = false, caf = false
-        for line in out.split(whereSeparator: \.isNewline) {
-            let parts = line.split(separator: " ", maxSplits: 1)
-            guard parts.count == 2 else { continue }
-            if parts[1].trimmingCharacters(in: .whitespaces) == "caffeinate" { caf = true } else { real = true }
+        for row in rows {
+            if basename(row.command) == "caffeinate" { caf = true } else { real = true }
         }
         return (real, caf)
+    }
+
+    static func parseCwdProcesses(_ text: String) -> [CwdProcess] {
+        var out: [CwdProcess] = []
+        var pid: Int32?
+        var command = ""
+        var cwd: String?
+
+        func flush() {
+            if let pid, let cwd {
+                out.append(CwdProcess(pid: pid, command: command, cwd: cwd))
+            }
+        }
+
+        for line in text.split(whereSeparator: \.isNewline).map(String.init) {
+            if line.hasPrefix("p") {
+                flush()
+                pid = Int32(line.dropFirst())
+                command = ""
+                cwd = nil
+            } else if line.hasPrefix("c") {
+                command = String(line.dropFirst())
+            } else if line.hasPrefix("n") {
+                cwd = String(line.dropFirst())
+            }
+        }
+        flush()
+        return out
+    }
+
+    private static func cwdProcesses() -> [CwdProcess] {
+        guard let out = capture("/usr/sbin/lsof", ["-nP", "-d", "cwd", "-Fpcn"]) else { return [] }
+        return parseCwdProcesses(out)
+    }
+
+    static func backgroundCwds(from processes: [CwdProcess],
+                               watchedCwds: Set<String>,
+                               excludedPids: Set<Int32>) -> Set<String> {
+        Set(processes.compactMap { proc in
+            guard watchedCwds.contains(proc.cwd),
+                  !excludedPids.contains(proc.pid),
+                  isBackgroundWorkCommand(proc.command) else { return nil }
+            return proc.cwd
+        })
+    }
+
+    static func isBackgroundWorkCommand(_ command: String) -> Bool {
+        let name = basename(command).lowercased()
+        let ignored: Set<String> = [
+            "bash", "caffeinate", "claude", "codex", "fish", "login", "osascript", "pgrep",
+            "ps", "sh", "sudo", "tcsh", "tmux", "zsh"
+        ]
+        if ignored.contains(name) { return false }
+        let likelyWork: Set<String> = [
+            "air", "bazel", "bun", "cargo", "clang", "clang++", "cmake", "deno", "docker",
+            "docker-compose", "dotnet", "esbuild", "go", "gradle", "gunicorn", "java", "jest",
+            "make", "mocha", "mvn", "next-server", "nginx", "ninja", "node", "npm", "npx",
+            "pnpm", "postgres", "pytest", "python", "python3", "rails", "redis-server", "rspec",
+            "ruby", "serve", "swift", "swift-build", "swift-frontend", "tailwindcss", "tsx",
+            "uvicorn", "vite", "vitest", "webpack", "xcodebuild", "yarn"
+        ]
+        return likelyWork.contains(name)
+    }
+
+    private static func basename(_ command: String) -> String {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "" }
+        return (trimmed as NSString).lastPathComponent
     }
 
     private static func capture(_ path: String, _ args: [String]) -> String? {

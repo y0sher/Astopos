@@ -108,6 +108,62 @@ import Foundation
         #expect(ProcessProbe.summarize(path, agent: .codex) == "hello codex")
     }
 
+    @Test func descendantsIncludeGrandchildrenAndClassifyCaffeinateSeparately() {
+        let rows = ProcessProbe.parseProcessRows("""
+          10   1 /usr/local/bin/claude
+          11  10 /bin/zsh
+          12  11 /opt/homebrew/bin/node
+          13  10 /usr/bin/caffeinate
+        """)
+        let byParent = Dictionary(grouping: rows, by: \.ppid)
+        let descendants = ProcessProbe.descendants(of: 10, in: byParent)
+        #expect(Set(descendants.map(\.pid)) == [11, 12, 13])
+        let kinds = ProcessProbe.childKinds(in: descendants)
+        #expect(kinds.real)
+        #expect(kinds.caffeinate)
+    }
+
+    @Test func caffeinateOnlyDescendantIsAgentActiveNotRealWork() {
+        let rows = ProcessProbe.parseProcessRows("""
+          10   1 /usr/local/bin/claude
+          13  10 /usr/bin/caffeinate
+        """)
+        let byParent = Dictionary(grouping: rows, by: \.ppid)
+        let kinds = ProcessProbe.childKinds(in: ProcessProbe.descendants(of: 10, in: byParent))
+        #expect(!kinds.real)
+        #expect(kinds.caffeinate)
+    }
+
+    @Test func backgroundCwdHeuristicFindsReparentedServerButIgnoresShellsAndKnownPids() {
+        let processes = [
+            ProcessProbe.CwdProcess(pid: 20, command: "/opt/homebrew/bin/node", cwd: "/p/app"),
+            ProcessProbe.CwdProcess(pid: 21, command: "/bin/zsh", cwd: "/p/app"),
+            ProcessProbe.CwdProcess(pid: 22, command: "/opt/homebrew/bin/python3", cwd: "/p/app"),
+            ProcessProbe.CwdProcess(pid: 23, command: "/opt/homebrew/bin/node", cwd: "/p/other")
+        ]
+        let cwds = ProcessProbe.backgroundCwds(from: processes,
+                                               watchedCwds: ["/p/app"],
+                                               excludedPids: [22])
+        #expect(cwds == ["/p/app"])
+        #expect(ProcessProbe.isBackgroundWorkCommand("/bin/zsh") == false)
+        #expect(ProcessProbe.isBackgroundWorkCommand("/opt/homebrew/bin/node"))
+    }
+
+    @Test func parseLsofCwdOutput() {
+        let processes = ProcessProbe.parseCwdProcesses("""
+        p20
+        cnode
+        n/p/app
+        p21
+        czsh
+        n/p/app
+        """)
+        #expect(processes == [
+            ProcessProbe.CwdProcess(pid: 20, command: "node", cwd: "/p/app"),
+            ProcessProbe.CwdProcess(pid: 21, command: "zsh", cwd: "/p/app")
+        ])
+    }
+
     @Test func missingFileIsSafe() {
         #expect(ProcessProbe.summarize("/no/such/file.jsonl", agent: .claude) == "")
         #expect(!ProcessProbe.subagentActive("/no/such/file.jsonl", agent: .claude))
