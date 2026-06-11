@@ -8,3 +8,5 @@ dmg-stage/
 # Raw source art (the compiled Astopos.icns is committed instead; README/release
 # images are hosted on the GitHub release, not in the repo).
 images/
+# Per-release scratch notes consumed by `make release`.
+RELEASE_NOTES.md

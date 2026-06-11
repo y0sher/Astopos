@@ -1,10 +1,10 @@
 APP = Astopos
-VERSION = 0.3.0
+VERSION = 0.4.0
 BUNDLE = $(APP).app
 BIN = .build/release/$(APP)
 DMG = $(APP)-$(VERSION).dmg
 
-.PHONY: build run app dmg icon clean
+.PHONY: build run app dmg icon release clean
 
 build:
 	swift build
@@ -56,6 +56,17 @@ dmg:
 	hdiutil create -volname "$(APP) $(VERSION)" -srcfolder dmg-stage -ov -format UDZO "$(DMG)"; \
 	rm -rf dmg-stage; \
 	echo "Built $(DMG)"; lipo -info "$(BUNDLE)/Contents/MacOS/$(APP)"
+
+# Cut a GitHub release: builds the universal DMG and uploads it together with the app icon and
+# the README logo. The README hotlinks releases/latest/download/readme_image.jpg, so EVERY
+# release must carry both images or the README breaks. Notes come from RELEASE_NOTES.md
+# (override with NOTES=path).
+NOTES ?= RELEASE_NOTES.md
+release: dmg
+	@test -f "$(NOTES)" || { echo "write $(NOTES) first (or pass NOTES=path)"; exit 1; }
+	gh release create "v$(VERSION)" "$(DMG)" images/icon.png images/readme_image.jpg \
+	  --title "$(APP) v$(VERSION)" --notes-file "$(NOTES)"
+	@echo "Released v$(VERSION) with DMG + icon + README logo"
 
 clean:
 	rm -rf .build $(BUNDLE) $(DMG) dmg-stage
