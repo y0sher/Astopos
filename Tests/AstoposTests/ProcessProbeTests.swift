@@ -93,6 +93,21 @@ import Foundation
         #expect(!ProcessProbe.subagentActive(path, agent: .codex))
     }
 
+    @Test func codexRolloutMetaSurvivesHugeFirstLine() {
+        // Codex embeds its full base instructions in the session_meta line (observed 22KB+);
+        // a fixed 16KB read used to truncate it mid-JSON and silently drop the session.
+        let pad = String(repeating: "x", count: 40_000)
+        let meta = #"{"timestamp":"2026-06-11T09:12:33.742Z","type":"session_meta","payload":{"id":"abc-123","cwd":"/p/astopos","base_instructions":{"text":"\#(pad)"}}}"#
+        let path = tmp([
+            meta,
+            #"{"type":"event_msg","payload":{"type":"user_message","message":"hello codex"},"timestamp":"2026-06-11T09:13:00.000Z"}"#
+        ])
+        let r = ProcessProbe.rolloutMeta(path)
+        #expect(r?.id == "abc-123")
+        #expect(r?.cwd == "/p/astopos")
+        #expect(ProcessProbe.summarize(path, agent: .codex) == "hello codex")
+    }
+
     @Test func missingFileIsSafe() {
         #expect(ProcessProbe.summarize("/no/such/file.jsonl", agent: .claude) == "")
         #expect(!ProcessProbe.subagentActive("/no/such/file.jsonl", agent: .claude))

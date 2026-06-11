@@ -105,7 +105,9 @@ enum ProcessProbe {
     static func summarize(_ path: String, agent: Agent) -> String {
         guard let fh = FileHandle(forReadingAtPath: path) else { return "" }
         defer { try? fh.close() }
-        let data = (try? fh.read(upToCount: 65_536)) ?? Data()
+        // Generous window: codex's first line alone is 22KB+ (embedded base instructions), and
+        // the first user prompt comes after it. Read once per session, then cached.
+        let data = (try? fh.read(upToCount: 262_144)) ?? Data()
         for line in String(decoding: data, as: UTF8.self).split(separator: "\n") {
             guard let obj = json(String(line)) else { continue }
             var text = ""
@@ -194,7 +196,7 @@ enum ProcessProbe {
             .prefix(max(1, limit)).map(\.path)
     }
 
-    private struct Rollout { let path: String; let cwd: String; let id: String }
+    struct Rollout { let path: String; let cwd: String; let id: String }
 
     /// Newest `limit` codex rollout files (by mtime), each with its meta cwd + session id.
     private static func recentRollouts(limit: Int) -> [Rollout] {
@@ -211,15 +213,30 @@ enum ProcessProbe {
         return files.sorted { $0.1 > $1.1 }.prefix(limit).compactMap { rolloutMeta($0.0.path) }
     }
 
-    private static func rolloutMeta(_ path: String) -> Rollout? {
-        guard let fh = FileHandle(forReadingAtPath: path) else { return nil }
-        defer { try? fh.close() }
-        let data = (try? fh.read(upToCount: 16_384)) ?? Data()
-        guard let line = String(decoding: data, as: UTF8.self).split(separator: "\n").first,
-              let d = json(String(line)), let p = d["payload"] as? [String: Any],
+    static func rolloutMeta(_ path: String) -> Rollout? {
+        // The session_meta line embeds codex's full base instructions (observed: 22KB+), so a
+        // fixed small read truncates it mid-JSON and silently drops the session — read until the
+        // first newline actually arrives.
+        guard let line = firstLine(path),
+              let d = json(line), let p = d["payload"] as? [String: Any],
               let cwd = p["cwd"] as? String, !cwd.isEmpty else { return nil }
         let id = p["id"] as? String ?? (path as NSString).lastPathComponent
         return Rollout(path: path, cwd: cwd, id: id)
+    }
+
+    /// First line of a file, reading incrementally up to `cap` bytes.
+    private static func firstLine(_ path: String, cap: Int = 4_194_304) -> String? {
+        guard let fh = FileHandle(forReadingAtPath: path) else { return nil }
+        defer { try? fh.close() }
+        var data = Data()
+        while data.count < cap {
+            guard let chunk = try? fh.read(upToCount: 65_536), !chunk.isEmpty else { break }
+            data.append(chunk)
+            if let nl = data.firstIndex(of: 0x0A) {
+                return String(decoding: data[data.startIndex..<nl], as: UTF8.self)
+            }
+        }
+        return data.isEmpty ? nil : String(decoding: data, as: UTF8.self)
     }
 
     /// Read the tail of a JSONL file as lines (drops a possibly-partial first line).
