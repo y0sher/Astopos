@@ -21,4 +21,25 @@ import Foundation
         #expect(PowerManager.pmsetArgs(arm: true) == ["-a", "disablesleep", "1"])
         #expect(PowerManager.pmsetArgs(arm: false) == ["-a", "disablesleep", "0"])
     }
+
+    @Test func sudoStatusChecksArmAndDisarmCommands() {
+        #expect(SudoersInstaller.sudoCheckArguments(arm: true)
+            == ["-n", "-l", "/usr/bin/pmset", "-a", "disablesleep", "1"])
+        #expect(SudoersInstaller.sudoCheckArguments(arm: false)
+            == ["-n", "-l", "/usr/bin/pmset", "-a", "disablesleep", "0"])
+    }
+
+    @Test func installScriptKeepsValidationAndInstallInsidePrivilegedSudoersDir() {
+        let id = UUID(uuidString: "00000000-0000-0000-0000-000000000001")!
+        let script = SudoersInstaller.installShell(user: "alice", id: id)
+        #expect(script.contains("tmp='/etc/sudoers.d/.astopos.00000000-0000-0000-0000-000000000001.tmp'"))
+        #expect(script.contains("/usr/sbin/visudo -cf \"$tmp\""))
+        #expect(script.contains("/bin/mv -f \"$tmp\" '/etc/sudoers.d/astopos'"))
+        #expect(script.contains("trap '/bin/rm -f \"$tmp\"' EXIT"))
+        #expect(!script.contains(NSTemporaryDirectory()))
+    }
+
+    @Test func shellQuoteEscapesSingleQuotes() {
+        #expect(SudoersInstaller.shellQuote("a'b") == "'a'\\''b'")
+    }
 }
