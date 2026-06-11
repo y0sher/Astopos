@@ -89,9 +89,12 @@ final class Coordinator: ObservableObject {
         oslog.info("poll (panelOpen=\(self.panelOpen), interval=\(self.state.pollIntervalSeconds)s, mode=\(self.state.mode.rawValue, privacy: .public))")
         let known = state.sessions.map { (transcript: $0.transcript, agent: $0.agent,
                                           needsSummary: $0.summary.isEmpty) }
+        // The system-wide reparented-server sweep is expensive (lsof over every process) and can
+        // false-positive on editor tooling — only pay for it when someone actually opted in.
+        let wantsReparentedScan = state.policies.values.contains { $0.isMonitored && $0.waitForChildren }
         Task.detached(priority: .utility) { [weak self] in
             let running = ProcessProbe.runningSessions()
-            let busy = ProcessProbe.busyState()   // children: real tools/servers + agent caffeinate
+            let busy = ProcessProbe.busyState(scanReparented: wantsReparentedScan)
             var targets = known
             for r in running where !targets.contains(where: { $0.transcript == r.transcript }) {
                 targets.append((transcript: r.transcript, agent: r.agent, needsSummary: true))

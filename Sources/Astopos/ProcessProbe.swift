@@ -140,7 +140,12 @@ enum ProcessProbe {
     ///     the whole time it's working a turn. This catches long generation stretches (extended
     ///     thinking) where the transcript goes quiet for minutes with no tool running — the one
     ///     state the transcript alone can't distinguish from "stopped".
-    static func busyState() -> (busy: Set<String>, agentActive: Set<String>) {
+    /// `scanReparented` additionally sweeps ALL processes (a system-wide lsof — expensive, and
+    /// its likely-work name list can false-positive on innocent tooling like an editor's tsserver
+    /// whose cwd happens to be the project). Callers enable it only when a monitored session has
+    /// actually opted into "Wait for background processes" — otherwise the extra result couldn't
+    /// change any decision.
+    static func busyState(scanReparented: Bool = true) -> (busy: Set<String>, agentActive: Set<String>) {
         var busy = Set<String>(), agent = Set<String>()
         let agentPids = pids(named: "claude") + pids(named: "codex")
         let rows = processRows()
@@ -159,7 +164,7 @@ enum ProcessProbe {
             if kids.caffeinate { agent.insert(c) }
         }
 
-        if !watchedCwds.isEmpty {
+        if scanReparented, !watchedCwds.isEmpty {
             let cwdProcs = cwdProcesses().map {
                 CwdProcess(pid: $0.pid, command: commandByPid[$0.pid] ?? $0.command, cwd: $0.cwd)
             }
