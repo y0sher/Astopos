@@ -417,10 +417,18 @@ enum ProcessProbe {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: path)
         p.arguments = args
-        let pipe = Pipe(); p.standardOutput = pipe; p.standardError = Pipe()
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = FileHandle.nullDevice
         do {
-            try p.run(); p.waitUntilExit()
-            return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)
+            try p.run()
+            // Drain BEFORE waiting: a child whose output exceeds the 64KB pipe buffer blocks on
+            // write until someone reads, so wait-then-read deadlocks both processes forever
+            // (bit us live: `ps -axo` over all processes wedged every poll — empty session list).
+            // readDataToEndOfFile returns at EOF, i.e. when the child exits and closes the pipe.
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            return String(data: data, encoding: .utf8)
         } catch { return nil }
     }
 }

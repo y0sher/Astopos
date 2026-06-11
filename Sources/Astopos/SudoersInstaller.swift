@@ -25,7 +25,9 @@ enum SudoersInstaller {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: "/usr/bin/sudo")
         p.arguments = sudoCheckArguments(arm: arm)
-        p.standardOutput = Pipe(); p.standardError = Pipe()
+        // nullDevice, not an undrained Pipe(): output nobody reads can deadlock the child.
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
         do { try p.run(); p.waitUntilExit(); return p.terminationStatus == 0 }
         catch { return false }
     }

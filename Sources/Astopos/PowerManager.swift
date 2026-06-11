@@ -108,7 +108,10 @@ enum PowerManager {
         let p = Process()
         p.executableURL = URL(fileURLWithPath: path)
         p.arguments = args
-        p.standardOutput = Pipe(); p.standardError = Pipe()
+        // nullDevice, not an undrained Pipe(): a pipe nobody reads deadlocks the child once its
+        // output exceeds the 64KB buffer.
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
         do {
             try p.run()
             p.waitUntilExit()
@@ -124,11 +127,13 @@ enum PowerManager {
         p.arguments = args
         let pipe = Pipe()
         p.standardOutput = pipe
-        p.standardError = Pipe()
+        p.standardError = FileHandle.nullDevice
         do {
             try p.run()
+            // Drain before waiting — wait-then-read deadlocks once output exceeds the pipe buffer.
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
             p.waitUntilExit()
-            return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)
+            return String(data: data, encoding: .utf8)
         } catch {
             return nil
         }
