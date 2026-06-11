@@ -4,7 +4,7 @@
 <dict>
     <key>CFBundleName</key>            <string>Astopos</string>
     <key>CFBundleDisplayName</key>     <string>Astopos</string>
-    <key>CFBundleIdentifier</key>      <string>io.ssvlabs.astopos</string>
+    <key>CFBundleIdentifier</key>      <string>io.github.y0sher.astopos</string>
     <key>CFBundleExecutable</key>      <string>Astopos</string>
     <key>CFBundleIconFile</key>        <string>Astopos</string>
     <key>CFBundlePackageType</key>     <string>APPL</string>

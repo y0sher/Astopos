@@ -19,9 +19,9 @@ final class Coordinator: ObservableObject {
     private var panelOpen = false            // drives poll cadence (live while visible)
     private var quitWithoutRevert = false    // user chose to quit with keep-awake still on
 
-    /// Observable via `log stream --predicate 'subsystem == "io.ssvlabs.astopos"'` — the poll
-    /// cadence and panel-visibility transitions are otherwise invisible from outside.
-    private let oslog = Logger(subsystem: "io.ssvlabs.astopos", category: "coordinator")
+    /// Observable via `log stream --predicate 'subsystem == "io.github.y0sher.astopos"'` — the
+    /// poll cadence and panel-visibility transitions are otherwise invisible from outside.
+    private let oslog = Logger(subsystem: "io.github.y0sher.astopos", category: "coordinator")
 
     init() {
         AppDelegate.coord = self   // so quit/signal paths can revert even if the panel never opened
