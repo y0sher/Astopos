@@ -391,15 +391,17 @@ struct PanelView: View {
     }
 }
 
-/// Small colored tag distinguishing claude vs codex sessions.
+/// Small colored tag distinguishing claude vs codex sessions. Text is adaptive primary — the
+/// color lives in the capsule tint; tone-on-tone (orange on orange) was unreadable on popover
+/// material.
 struct AgentBadge: View {
     let agent: ProcessProbe.Agent
     var body: some View {
         Text(agent == .claude ? "claude" : "codex")
             .font(.system(size: 9, weight: .bold))
             .padding(.horizontal, 5).padding(.vertical, 2)
-            .background((agent == .claude ? Color.orange : Color.teal).opacity(0.22))
-            .foregroundStyle(agent == .claude ? Color.orange : Color.teal)
+            .background((agent == .claude ? Color.orange : Color.teal).opacity(0.3))
+            .foregroundStyle(.primary)
             .clipShape(Capsule())
     }
 }
@@ -452,9 +454,19 @@ struct SessionRow: View {
                             HStack(spacing: 6) {
                                 AgentBadge(agent: sess.agent)
                                 Text(sess.folderName).font(.caption.bold())
+                                Spacer()
+                                Text("active \(sess.lastSeen.formatted(date: .omitted, time: .shortened))")
+                                    .font(.caption2).foregroundStyle(.secondary)
                             }
                             Text(sess.summary).font(.callout).textSelection(.enabled)
                             Text(sess.cwd).font(.caption2).foregroundStyle(.secondary).textSelection(.enabled)
+                            // Definitive identification: /status inside a claude terminal prints
+                            // its session id — match it against this.
+                            Text(sess.id).font(.caption2.monospaced()).foregroundStyle(.secondary)
+                                .textSelection(.enabled)
+                            Text("Which terminal is this? Run /status in it — the session id must match.")
+                                .font(.caption2).foregroundStyle(.tertiary)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                         .padding(12).frame(width: 300)
                     }
