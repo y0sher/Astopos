@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import AppKit
+import os.log
 
 /// Polls Claude/Codex transcripts + the OS probe and drives power actions via the observable state.
 @MainActor
@@ -17,6 +18,10 @@ final class Coordinator: ObservableObject {
     private var sleptForDone = false         // one-shot: already slept for the current done-state
     private var panelOpen = false            // drives poll cadence (live while visible)
     private var quitWithoutRevert = false    // user chose to quit with keep-awake still on
+
+    /// Observable via `log stream --predicate 'subsystem == "io.ssvlabs.astopos"'` — the poll
+    /// cadence and panel-visibility transitions are otherwise invisible from outside.
+    private let oslog = Logger(subsystem: "io.ssvlabs.astopos", category: "coordinator")
 
     init() {
         AppDelegate.coord = self   // so quit/signal paths can revert even if the panel never opened
@@ -55,8 +60,14 @@ final class Coordinator: ObservableObject {
 
     /// Panel visibility drives cadence; opening always scans immediately so the list is fresh
     /// the moment the user looks.
-    func panelDidAppear() { panelOpen = true; poll(); schedulePoll() }
-    func panelDidDisappear() { panelOpen = false; schedulePoll() }
+    func panelDidAppear() {
+        oslog.info("panelDidAppear")
+        panelOpen = true; poll(); schedulePoll()
+    }
+    func panelDidDisappear() {
+        oslog.info("panelDidDisappear")
+        panelOpen = false; schedulePoll()
+    }
     /// Manual re-scan (the liveness line doubles as a refresh button).
     func refreshNow() { poll() }
 
@@ -75,6 +86,7 @@ final class Coordinator: ObservableObject {
     private func poll() {
         guard !polling else { return }
         polling = true
+        oslog.info("poll (panelOpen=\(self.panelOpen), interval=\(self.state.pollIntervalSeconds)s, mode=\(self.state.mode.rawValue, privacy: .public))")
         let known = state.sessions.map { (transcript: $0.transcript, agent: $0.agent,
                                           needsSummary: $0.summary.isEmpty) }
         Task.detached(priority: .utility) { [weak self] in

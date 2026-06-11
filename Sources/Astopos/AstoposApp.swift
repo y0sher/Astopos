@@ -16,9 +16,10 @@ struct AstoposApp: App {
     }
 }
 
-/// "1h 5m" / "12m" / "40s" for compact countdowns.
+/// "3d 4h" / "1h 5m" / "12m" / "40s" — compact, scales past minutes ("idle 1006m" is unreadable).
 func shortDuration(_ seconds: Int) -> String {
     let s = max(0, seconds)
+    if s >= 86_400 { return "\(s / 86_400)d \((s % 86_400) / 3600)h" }
     if s >= 3600 { return "\(s / 3600)h \((s % 3600) / 60)m" }
     if s >= 60 { return "\(s / 60)m" }
     return "\(s)s"
@@ -145,11 +146,13 @@ struct PanelView: View {
                     if let polled = state.lastPollAt {
                         // The element that tells you it's stale is also the cure: click to re-scan.
                         Button { coord.refreshNow() } label: {
-                            Text("checked \(shortDuration(Int(Date().timeIntervalSince(polled)))) ago · every \(shortDuration(state.pollIntervalSeconds))")
+                            // The label is only visible while the panel is open — when the cadence
+                            // IS 15s. Say so, or it reads as the permanent background rate.
+                            Text("checked \(shortDuration(Int(Date().timeIntervalSince(polled)))) ago · 15s while open")
                                 .font(.caption2).foregroundStyle(.tertiary)
                         }
                         .buttonStyle(.plain)
-                        .help("Click to re-scan sessions now")
+                        .help("Click to re-scan now. Battery-light when closed: every 60s while armed, 120s otherwise.")
                         .accessibilityLabel("Refresh sessions now")
                     }
                 }
@@ -526,8 +529,7 @@ struct SessionRow: View {
         if sess.agentBusy { return "working" }   // generating (claude holds its keep-awake)
         if monitored, pol.waitForChildren, sess.toolRunning { return "background process running" }
         if sess.idleSeconds < 15 { return "working" }
-        let s = sess.idleSeconds
-        var idle = s >= 60 ? "idle \(s / 60)m" : "idle \(s)s"
+        var idle = "idle \(shortDuration(sess.idleSeconds))"
         if sess.toolRunning { idle += " · bg running" }   // informational: not blocking sleep
         if let extra = countdown { return "\(idle) · \(extra)" }
         return idle
