@@ -415,6 +415,7 @@ struct SessionRow: View {
     var showFolder: Bool = true
     var showBadge: Bool = true
     @State private var showInfo = false
+    @State private var bgCommands: [String]?   // popover detail, probed on demand
     private var pol: SessionPolicy { state.policy(for: sess.id) }
     private var monitored: Bool { pol.isMonitored }
 
@@ -455,11 +456,25 @@ struct SessionRow: View {
                                 AgentBadge(agent: sess.agent)
                                 Text(sess.folderName).font(.caption.bold())
                                 Spacer()
-                                Text("active \(sess.lastSeen.formatted(date: .omitted, time: .shortened))")
+                                Text("\(stateText) · \(sess.lastSeen.formatted(date: .omitted, time: .shortened))")
                                     .font(.caption2).foregroundStyle(.secondary)
                             }
                             Text(sess.summary).font(.callout).textSelection(.enabled)
                             Text(sess.cwd).font(.caption2).foregroundStyle(.secondary).textSelection(.enabled)
+                            // Probed on popover open (process tree + reparented sweep — too costly
+                            // per poll, fine per click). Folder-level by nature: several sessions
+                            // can share the cwd.
+                            if let cmds = bgCommands {
+                                if !cmds.isEmpty {
+                                    Text("Running in this folder: \(cmds.joined(separator: ", "))")
+                                        .font(.caption2).foregroundStyle(.secondary)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                }
+                            } else {
+                                Text("Checking background processes…")
+                                    .font(.caption2).foregroundStyle(.tertiary)
+                            }
+                            Divider()
                             // Definitive identification: /status inside a claude terminal prints
                             // its session id — match it against this.
                             Text(sess.id).font(.caption2.monospaced()).foregroundStyle(.secondary)
@@ -469,6 +484,13 @@ struct SessionRow: View {
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                         .padding(12).frame(width: 300)
+                        .task {
+                            bgCommands = nil
+                            let cwd = sess.cwd
+                            bgCommands = await Task.detached(priority: .userInitiated) {
+                                ProcessProbe.backgroundCommands(forCwd: cwd)
+                            }.value
+                        }
                     }
                 }
                 Spacer()

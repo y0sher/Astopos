@@ -176,6 +176,33 @@ enum ProcessProbe {
     /// cwds that currently have a real (non-caffeinate) child — kept for the --probe debug path.
     static func busyCwds() -> Set<String> { busyState().busy }
 
+    /// Human-readable detail for the info popover: command names currently running under the
+    /// agent processes in this cwd, plus likely-work processes that detached from them (marked).
+    /// On-demand only — it does a process-table pass AND a system-wide lsof, too costly for every
+    /// poll but fine for a click.
+    static func backgroundCommands(forCwd cwd: String) -> [String] {
+        let rows = processRows()
+        let childrenByParent = Dictionary(grouping: rows, by: \.ppid)
+        let agentPids = (pids(named: "claude") + pids(named: "codex")).filter { cwdOf($0) == cwd }
+        var names: [String] = []
+        var excluded = Set(agentPids)
+        for pid in agentPids {
+            for row in descendants(of: pid, in: childrenByParent) {
+                excluded.insert(row.pid)
+                let name = basename(row.command)
+                if name != "caffeinate" { names.append(name) }
+            }
+        }
+        let commandByPid = Dictionary(rows.map { ($0.pid, $0.command) }, uniquingKeysWith: { a, _ in a })
+        for proc in cwdProcesses() where proc.cwd == cwd && !excluded.contains(proc.pid) {
+            let cmd = commandByPid[proc.pid] ?? proc.command
+            if isBackgroundWorkCommand(cmd) { names.append(basename(cmd) + " (detached)") }
+        }
+        var seen = Set<String>(), out: [String] = []
+        for n in names where seen.insert(n).inserted { out.append(n) }
+        return out
+    }
+
     static func pids(forCwd cwd: String) -> [Int32] {
         (pids(named: "claude") + pids(named: "codex")).filter { cwdOf($0) == cwd }
     }
